@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ClosedMesh</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #0a0a0a;
+        color: #e5e5e5;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          system-ui, sans-serif;
+        height: 100%;
+      }
+      .center {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        font-size: 13px;
+        opacity: 0.6;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Placeholder bundle for Tauri's `frontendDist`. The real ClosedMesh
+      desktop window is constructed in src/main.rs with
+      `WebviewUrl::External(closedmesh.com)`, so this file is never actually
+      shown to the user — it just exists so `tauri build` has something to
+      embed in the .app/.exe/.deb bundle.
+    -->
+    <div class="center">Loading ClosedMesh…</div>
+  </body>
+</html>

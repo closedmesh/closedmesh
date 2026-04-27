@@ -16,6 +16,9 @@ node_modules/
 out/
 build/
 dist/
+# Tauri shell ships a tiny placeholder bundle in desktop/dist so `tauri build`
+# is happy in CI; the real webview loads closedmesh.com via WebviewUrl::External.
+!desktop/dist/
 .turbo/
 *.tsbuildinfo
 next-env.d.ts
