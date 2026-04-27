@@ -1,0 +1,14 @@
+# Cargo build artifacts (Cargo.lock is committed -- binary crate)
+target/
+
+# Tauri-generated capability schemas, mobile project scaffolding, etc.
+gen/
+
+# npm
+node_modules/
+
+# Generated on every build. `icons/source.svg` is the design source-of-truth;
+# everything else is rasterized by `scripts/svg-to-png.mjs` + `tauri icon`
+# and only needs to live in release artifacts, not git.
+icons/*
+!icons/source.svg

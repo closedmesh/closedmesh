@@ -1,0 +1,35 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+*.log
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+dist/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# Internal working files — team framework, strategy notes, research artifacts,
+# weekly reports, task ledger, editor/agent tooling configs. Not part of the
+# public project; kept out of the public repo. Local tree only.
+internal/
+.cursor/
+
+# Vercel
+.vercel/
+
+# Model cache and runtime data
+.closedmesh/
+.forgemesh/
+models/*.gguf
