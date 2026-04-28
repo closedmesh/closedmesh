@@ -5,18 +5,29 @@ import { applyCors, preflightResponse } from "../_cors";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+// `.trim()` defensively against env values like `"https://…/v1\n"` — Vercel
+// has burned us once already on `NEXT_PUBLIC_DEPLOYMENT="public\n"` and we
+// previously trimmed the token but not the URL, leaving `${RUNTIME_URL}/models`
+// to expand into a string with a literal newline mid-URL. Empty string after
+// trim falls through to the localhost default, matching dev expectations.
+function trimmedEnv(...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const raw = process.env[key];
+    if (raw === undefined) continue;
+    const value = raw.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
 const RUNTIME_URL =
-  process.env.CLOSEDMESH_RUNTIME_URL ??
-  process.env.MESH_LLM_URL ??
+  trimmedEnv("CLOSEDMESH_RUNTIME_URL", "MESH_LLM_URL") ??
   "http://127.0.0.1:9337/v1";
 
-// Bearer token shared with the runtime's Caddy auth gateway. Set on Vercel
-// for the public deployment; unset in local dev where the runtime is on
-// the loopback. We strip surrounding whitespace because Vercel has burned
-// us before with a `"public\n"` env value.
-const RUNTIME_TOKEN = (
-  process.env.CLOSEDMESH_RUNTIME_TOKEN ?? ""
-).trim();
+// Bearer token shared with the runtime's auth gateway. Set on Vercel for
+// the public deployment; unset in local dev where the runtime is on the
+// loopback.
+const RUNTIME_TOKEN = trimmedEnv("CLOSEDMESH_RUNTIME_TOKEN") ?? "";
 
 const runtimeHeaders: Record<string, string> = RUNTIME_TOKEN
   ? { Authorization: `Bearer ${RUNTIME_TOKEN}` }

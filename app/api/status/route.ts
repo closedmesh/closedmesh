@@ -4,19 +4,29 @@ import { applyCors, preflightResponse } from "../_cors";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// See the matching helper in app/api/chat/route.ts for the rationale —
+// Vercel has shipped trailing-newline env values to us before, and a raw
+// `${RUNTIME_URL}/models` then carries a literal newline mid-URL. Trim
+// defensively at the read site.
+function trimmedEnv(...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const raw = process.env[key];
+    if (raw === undefined) continue;
+    const value = raw.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
 const RUNTIME_URL =
-  process.env.CLOSEDMESH_RUNTIME_URL ??
-  process.env.MESH_LLM_URL ??
+  trimmedEnv("CLOSEDMESH_RUNTIME_URL", "MESH_LLM_URL") ??
   "http://127.0.0.1:9337/v1";
 
 const ADMIN_URL =
-  process.env.CLOSEDMESH_ADMIN_URL ??
-  process.env.MESH_CONSOLE_URL ??
+  trimmedEnv("CLOSEDMESH_ADMIN_URL", "MESH_CONSOLE_URL") ??
   "http://127.0.0.1:3131";
 
-const RUNTIME_TOKEN = (
-  process.env.CLOSEDMESH_RUNTIME_TOKEN ?? ""
-).trim();
+const RUNTIME_TOKEN = trimmedEnv("CLOSEDMESH_RUNTIME_TOKEN") ?? "";
 
 const runtimeHeaders: Record<string, string> = RUNTIME_TOKEN
   ? { Authorization: `Bearer ${RUNTIME_TOKEN}` }
