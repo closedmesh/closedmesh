@@ -36,6 +36,35 @@ type RepairResp = {
   applied?: Array<{ kind: RepairIssue["kind"]; ok: boolean; message: string }>;
 };
 
+type UpdateAsset = {
+  kind: string;
+  name: string;
+  size: number;
+  url: string;
+};
+
+type UpdateCheckResp =
+  | {
+      ok: true;
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      publishedAt: string;
+      htmlUrl: string;
+      asset: UpdateAsset | null;
+      hostOs: string;
+      hostArch: string;
+    }
+  | {
+      ok: false;
+      message: string;
+      currentVersion: string;
+    };
+
+type UpdateDownloadResp =
+  | { ok: true; path: string; opened: boolean; message: string }
+  | { ok: false; message: string };
+
 type StartupModel = { model: string; ctxSize?: number };
 type StartupResp =
   | {
@@ -83,13 +112,15 @@ export default function DashboardPage() {
   const mesh = useMeshStatus();
   const [control, setControl] = useState<ControlStatus | null>(null);
   const [busy, setBusy] = useState<
-    "start" | "stop" | "invite" | "repair" | "quickstart" | null
+    "start" | "stop" | "invite" | "repair" | "quickstart" | "update" | null
   >(null);
   const [toast, setToast] = useState<string | null>(null);
   const [repair, setRepair] = useState<RepairResp | null>(null);
   const [startup, setStartup] = useState<StartupModel[] | null>(null);
   const [localModels, setLocalModels] = useState<LocalModel[] | null>(null);
   const [quickStart, setQuickStart] = useState<QuickStartPhase>({ kind: "idle" });
+  const [update, setUpdate] = useState<UpdateCheckResp | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState<boolean>(false);
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -139,13 +170,28 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const refreshUpdate = useCallback(async () => {
+    try {
+      const res = await fetch("/api/control/update-check", {
+        cache: "no-store",
+      });
+      const data = (await res.json()) as UpdateCheckResp;
+      setUpdate(data);
+    } catch {
+      // network blip — banner just stays hidden
+    }
+  }, []);
+
   useEffect(() => {
     refresh();
     refreshRepair();
     refreshStartup();
     refreshLocalModels();
+    refreshUpdate();
     // Refresh control status every 4s (cheap), startup config + local
     // models every 12s (read disk on each call, less critical).
+    // Update check is hourly — releases land at most once a day, and
+    // the upstream API is rate-limited.
     refreshTimer.current = setInterval(() => {
       refresh();
     }, 4000);
@@ -153,11 +199,13 @@ export default function DashboardPage() {
       refreshStartup();
       refreshLocalModels();
     }, 12_000);
+    const updateTick = setInterval(refreshUpdate, 60 * 60 * 1000);
     return () => {
       if (refreshTimer.current) clearInterval(refreshTimer.current);
       clearInterval(slowTick);
+      clearInterval(updateTick);
     };
-  }, [refresh, refreshRepair, refreshStartup, refreshLocalModels]);
+  }, [refresh, refreshRepair, refreshStartup, refreshLocalModels, refreshUpdate]);
 
   const runRepair = useCallback(async () => {
     setBusy("repair");
@@ -340,6 +388,63 @@ export default function DashboardPage() {
     [refresh, refreshLocalModels],
   );
 
+  /**
+   * Track which "update available" banner the user has explicitly
+   * dismissed so we don't re-nag them every time they open the
+   * dashboard. Keyed by the latest version we know about — when a
+   * newer release ships, the banner reappears (which is what we want).
+   *
+   * Read once on mount so a stale `latestVersion` from earlier in the
+   * session doesn't override a fresh dismiss.
+   */
+  useEffect(() => {
+    if (!update || !update.ok || !update.updateAvailable) {
+      setUpdateDismissed(false);
+      return;
+    }
+    try {
+      const stored = localStorage.getItem("closedmesh:update-dismissed");
+      setUpdateDismissed(stored === update.latestVersion);
+    } catch {
+      setUpdateDismissed(false);
+    }
+  }, [update]);
+
+  const dismissUpdate = useCallback(() => {
+    if (!update || !update.ok) return;
+    try {
+      localStorage.setItem(
+        "closedmesh:update-dismissed",
+        update.latestVersion,
+      );
+    } catch {
+      // private mode / quota exhausted — still hide for this session
+    }
+    setUpdateDismissed(true);
+  }, [update]);
+
+  const downloadUpdate = useCallback(async () => {
+    if (!update || !update.ok || !update.asset) return;
+    setBusy("update");
+    setToast(null);
+    try {
+      const res = await fetch("/api/control/update-download", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          url: update.asset.url,
+          filename: update.asset.name,
+        }),
+      });
+      const data = (await res.json()) as UpdateDownloadResp;
+      setToast(data.message);
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : "request failed");
+    } finally {
+      setBusy(null);
+    }
+  }, [update]);
+
   const copyInvite = useCallback(async () => {
     setBusy("invite");
     setToast(null);
@@ -414,6 +519,18 @@ export default function DashboardPage() {
 
       <main className="flex-1 overflow-y-auto scrollbar-thin">
         <div className="mx-auto flex max-w-5xl flex-col gap-5 px-6 py-6">
+          {update &&
+            update.ok &&
+            update.updateAvailable &&
+            !updateDismissed && (
+              <UpdateBanner
+                check={update}
+                busy={busy === "update"}
+                onDownload={downloadUpdate}
+                onDismiss={dismissUpdate}
+              />
+            )}
+
           {repair && repair.issues.length > 0 && (
             <RepairBanner
               issues={repair.issues}
@@ -489,6 +606,95 @@ export default function DashboardPage() {
   );
 }
 
+function UpdateBanner({
+  check,
+  busy,
+  onDownload,
+  onDismiss,
+}: {
+  check: Extract<UpdateCheckResp, { ok: true }>;
+  busy: boolean;
+  onDownload: () => void;
+  onDismiss: () => void;
+}) {
+  const sizeLabel = check.asset
+    ? `${(check.asset.size / 1024 / 1024).toFixed(0)} MB`
+    : null;
+  return (
+    <section className="relative overflow-hidden rounded-2xl border border-[var(--accent)]/40 bg-[var(--accent-soft)] p-5">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(60% 100% at 0% 0%, rgba(255,122,69,0.16), transparent 70%)",
+        }}
+      />
+      <div className="relative flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 max-w-2xl">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--accent)]">
+            Update available
+          </div>
+          <div className="mt-0.5 text-base font-semibold tracking-tight text-[var(--fg)]">
+            ClosedMesh {check.latestVersion}
+            <span className="ml-2 font-mono text-[11px] font-normal text-[var(--fg-muted)]">
+              you&apos;re on {check.currentVersion}
+            </span>
+          </div>
+          <p className="mt-1 text-[12px] leading-relaxed text-[var(--fg-muted)]">
+            {check.asset
+              ? "We'll download the installer and open it for you. You'll click through the usual " +
+                (check.hostOs === "macos"
+                  ? "drag-to-Applications"
+                  : check.hostOs === "windows"
+                    ? "Windows installer"
+                    : "AppImage") +
+                " step to finish."
+              : "No installer published for this platform yet — open the release page on GitHub to grab one manually."}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {check.asset ? (
+            <button
+              onClick={onDownload}
+              disabled={busy}
+              className="rounded-lg bg-[var(--accent)] px-4 py-2 text-xs font-semibold text-black shadow-[0_8px_24px_-12px_rgba(255,122,69,0.7)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {busy
+                ? "Downloading…"
+                : `Download${sizeLabel ? ` · ${sizeLabel}` : ""}`}
+            </button>
+          ) : (
+            <a
+              href={check.htmlUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-lg bg-[var(--accent)] px-4 py-2 text-xs font-semibold text-black shadow-[0_8px_24px_-12px_rgba(255,122,69,0.7)] transition hover:brightness-110"
+            >
+              Open release page
+            </a>
+          )}
+          <a
+            href={check.htmlUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-2 text-xs font-medium text-[var(--fg-muted)] transition hover:text-[var(--fg)]"
+          >
+            Notes
+          </a>
+          <button
+            onClick={onDismiss}
+            className="rounded-lg px-2 py-2 text-xs text-[var(--fg-muted)] transition hover:text-[var(--fg)]"
+            title="Hide this banner until the next release"
+          >
+            Later
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function RepairBanner({
   issues,
   busy,
@@ -544,7 +750,14 @@ function ThisNodeCard({
   running: boolean;
   stopped: boolean;
   startupConfigured: boolean;
-  busy: "start" | "stop" | "invite" | "repair" | "quickstart" | null;
+  busy:
+    | "start"
+    | "stop"
+    | "invite"
+    | "repair"
+    | "quickstart"
+    | "update"
+    | null;
   onStart: () => void;
   onStop: () => void;
 }) {
@@ -876,7 +1089,14 @@ function QuickActions({
   toast,
 }: {
   running: boolean;
-  busy: "start" | "stop" | "invite" | "repair" | "quickstart" | null;
+  busy:
+    | "start"
+    | "stop"
+    | "invite"
+    | "repair"
+    | "quickstart"
+    | "update"
+    | null;
   onCopyInvite: () => void;
   toast: string | null;
 }) {

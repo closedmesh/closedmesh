@@ -23,6 +23,35 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// Stable string labels for the host OS, used by the in-app update
+/// checker so /api/control/update-check can pick the right release
+/// asset off our GitHub releases. Lowercase, no spaces — easy to match
+/// against asset name suffixes on the server side.
+fn host_os_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    }
+}
+
+/// Stable string labels for the host CPU architecture. Same role as
+/// `host_os_label`. Apple Silicon is reported as `aarch64` to match
+/// our release artifact names (`ClosedMesh_<ver>_aarch64.dmg`).
+fn host_arch_label() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "unknown"
+    }
+}
+
 /// Filenames the bundled Node.js binary may go by, in resolution order.
 ///
 /// Tauri's `bundle.externalBin` ships the host-platform variant with
@@ -218,6 +247,15 @@ impl Sidecar {
             .env("HOSTNAME", "127.0.0.1")
             .env("NODE_ENV", "production")
             .env("NEXT_TELEMETRY_DISABLED", "1")
+            // Tell the bundled controller what version of the .app
+            // it's running inside, plus enough about the host OS/arch
+            // for the in-app updater to pick the right release asset
+            // off our GitHub releases (e.g. `ClosedMesh_<ver>_aarch64.dmg`
+            // vs `_x64-setup.exe`). The controller reads these in
+            // /api/control/update-check.
+            .env("CLOSEDMESH_APP_VERSION", env!("CARGO_PKG_VERSION"))
+            .env("CLOSEDMESH_HOST_OS", host_os_label())
+            .env("CLOSEDMESH_HOST_ARCH", host_arch_label())
             // Run from the controller dir so relative paths inside the
             // standalone bundle resolve correctly.
             .current_dir(&controller_dir)
