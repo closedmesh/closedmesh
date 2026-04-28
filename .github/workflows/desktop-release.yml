@@ -1,0 +1,186 @@
+# Build & publish the ClosedMesh desktop bundles (.dmg, .msi, .AppImage, .deb)
+# whenever a `desktop-v*` tag is pushed.
+#
+# Trigger:
+#     git tag desktop-v0.1.0 && git push origin desktop-v0.1.0
+#
+# Output: a GitHub Release named "ClosedMesh Desktop v0.1.0" with one asset
+# per platform variant:
+#
+#     ClosedMesh_0.1.0_aarch64.dmg          (Apple Silicon)
+#     ClosedMesh_0.1.0_x64.dmg              (Intel Mac)
+#     ClosedMesh_0.1.0_x64-setup.exe        (Windows NSIS)
+#     ClosedMesh_0.1.0_x64_en-US.msi        (Windows MSI)
+#     closedmesh_0.1.0_amd64.deb            (Debian / Ubuntu)
+#     closedmesh_0.1.0_amd64.AppImage       (universal Linux)
+#     latest.json                           (Tauri auto-updater manifest)
+#
+# The `desktop-v*` prefix is intentional: the desktop shell versions
+# independently of the Next.js chat app and the closedmesh-llm runtime, so
+# we don't want a normal `vX.Y.Z` push to fire this workflow.
+
+name: Desktop release
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. desktop-v0.1.0)'
+        required: true
+        type: string
+
+# tauri-action needs `contents: write` on the repo to create releases and
+# upload binary assets. Everything else stays read-only.
+permissions:
+  contents: write
+
+# A given commit can only have one in-flight desktop release at a time;
+# subsequent pushes cancel earlier in-progress runs to avoid releases
+# stomping on each other.
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      # Don't take the rest of the matrix down if one platform fails — we'd
+      # rather ship 4-of-5 platform bundles and fix the broken one in a
+      # follow-up than block the whole release on, say, a flaky Windows
+      # runner.
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+            args: '--target aarch64-apple-darwin'
+          # macOS Intel (x86_64) was dropped after v0.1.1 — the macos-13
+          # runner pool has multi-hour queue times now that Apple Silicon
+          # has replaced Intel in the entire current Mac lineup. If/when
+          # we have a paying user on a pre-2021 Intel Mac we'll bring it
+          # back as a universal binary built on macos-14 instead.
+          - label: Windows x86_64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: ''
+          - label: Linux x86_64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            args: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            desktop/package-lock.json
+            package-lock.json
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop -> target
+          # Bump this if you ever need to bust the cache (e.g. weird linker
+          # state after a Rust toolchain update).
+          prefix-key: 'desktop-v1'
+
+      # WebKitGTK + GTK + libsoup are the runtime deps for `wry` (Tauri's
+      # webview crate) on Linux. librsvg is needed by the .deb bundler for
+      # rendering the icon. libayatana-appindicator covers the system tray
+      # on GNOME / Ubuntu.
+      - name: Install Linux build deps
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      # Phase 8b — bundle the Next.js controller as a Tauri sidecar so the
+      # downloaded .dmg / .msi / .AppImage / .deb is self-sufficient and
+      # the user doesn't have to run a separate curl-bash to install the
+      # controller. See desktop/SIDECAR.md.
+      - name: Stage controller bundle (npm ci + next build standalone)
+        run: ./desktop/scripts/stage-controller.sh
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+
+      - name: Fetch Node.js sidecar binary for ${{ matrix.target }}
+        run: ./desktop/scripts/fetch-node.sh --target ${{ matrix.target }}
+
+      - name: Install desktop npm deps
+        working-directory: desktop
+        run: npm ci --no-fund --no-audit
+
+      - name: Generate platform icons
+        working-directory: desktop
+        run: npm run icons
+
+      - name: Build & upload bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Cargo workspace lives in desktop/, not the repo root.
+          projectPath: desktop
+          # Re-use whatever tag triggered the workflow (or the manual
+          # workflow_dispatch input); tauri-action creates / appends to a
+          # release with this tag name.
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: 'ClosedMesh Desktop ${{ github.event.inputs.tag || github.ref_name }}'
+          releaseBody: |
+            ## ClosedMesh Desktop ${{ github.event.inputs.tag || github.ref_name }}
+
+            Cross-platform desktop shell for ClosedMesh — wraps the chat UI in
+            a native window with a system-tray pill, live node count, and
+            one-click Start/Stop for the runtime.
+
+            **Pick your platform:**
+            - **macOS (Apple Silicon, M1+):** `ClosedMesh_*_aarch64.dmg`
+            - **Windows 10/11:** `ClosedMesh_*_x64-setup.exe` (recommended) or `.msi`
+            - **Linux (Debian / Ubuntu):** `*_amd64.deb`
+            - **Linux (everything else):** `*_amd64.AppImage` (`chmod +x` and run)
+
+            (Pre-2021 Intel Macs aren't shipped pre-built; you can still
+            build from source with `cd desktop && ./scripts/build.sh`.)
+
+            **First launch on macOS:** double-click → "Done" on the
+            "unidentified developer" dialog → System Settings → Privacy
+            & Security → "Open Anyway" next to the ClosedMesh notice.
+            (We ad-hoc sign the bundle, so it goes through the normal
+            Gatekeeper bypass; we're working on full notarization.)
+
+            **First launch on Windows:** the SmartScreen filter says
+            "Windows protected your PC" — click "More info" → "Run
+            anyway".
+
+            The runtime (`closedmesh` CLI) installs separately via the curl /
+            PowerShell one-liner from https://closedmesh.com.
+          releaseDraft: false
+          prerelease: false
+          # Forward platform-specific args (the `--target` flag for macOS
+          # arm64 vs Intel) into `cargo tauri build`.
+          args: ${{ matrix.args }}
+          # Tauri-action picks an appropriate updater bundle; we keep
+          # bundling for everything so the auto-updater plugin can ship
+          # later without re-tagging.
+          includeUpdaterJson: true

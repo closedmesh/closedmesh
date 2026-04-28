@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Entitlements for the Node.js sidecar binary that ships inside the
+        ClosedMesh.app bundle (Phase 8b — see ../SIDECAR.md).
+
+        Tauri ad-hoc-signs every binary it bundles with the hardened-runtime
+        flag enabled, which strips Node's original entitlements. Without
+        these three keys, dyld refuses to load the V8 / libuv hosts on
+        macOS 11+ and Node segfaults at the simplest `console.log`.
+
+        - allow-jit + allow-unsigned-executable-memory: V8 needs writable
+          executable pages for its baseline JIT.
+        - allow-dyld-environment-variables: lets Node honour `NODE_OPTIONS`,
+          `NODE_PATH`, etc. Node's published binaries from nodejs.org carry
+          this entitlement; we just have to put it back after re-signing.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>

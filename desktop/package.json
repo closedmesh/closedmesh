@@ -1,0 +1,16 @@
+{
+  "name": "closedmesh-desktop",
+  "private": true,
+  "version": "0.1.1",
+  "description": "Cross-platform desktop shell for ClosedMesh (Tauri 2).",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icons": "node scripts/svg-to-png.mjs && tauri icon icons/source.png --output icons && cp icons/icon.ico ../app/favicon.ico"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}
