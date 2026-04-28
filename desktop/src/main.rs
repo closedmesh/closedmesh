@@ -51,6 +51,16 @@ fn main() {
 
     tauri::Builder::default()
         .setup(move |app| {
+            // Wipe the WKWebView cache on first launch of a new version.
+            // Each release rebuilds the Next.js controller and produces
+            // new chunk hashes; cached HTML from the previous version
+            // points at chunk URLs that no longer exist on disk, leaving
+            // the user staring at an unstyled page until they manually
+            // delete ~/Library/Caches/dev.closedmesh.shell. We track the
+            // last-seen version in a tiny stamp file and nuke the cache
+            // dirs whenever it changes.
+            wipe_webview_cache_on_version_change(app);
+
             // Spawn the bundled controller as the very first thing — the
             // webview URL we hand to `WebviewWindowBuilder` below depends
             // on whether it came up. We don't fatal-fail on sidecar
@@ -454,6 +464,115 @@ fn render_tooltip(status: &MeshStatus) -> String {
 fn control_entry_url(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
     format!("{trimmed}/dashboard")
+}
+
+/// Wipe the WKWebView / WebKit2GTK / WebView2 disk cache the first time
+/// the user launches a new version of the app.
+///
+/// Why: the bundled Next.js controller serves HTML referencing chunk
+/// URLs like `/_next/static/chunks/<hash>.css`. Those hashes are pinned
+/// at build time. WKWebView caches HTML responses aggressively (the
+/// prerendered routes used to ship `s-maxage=31536000`), so after an
+/// upgrade it'll happily serve the previous version's HTML, which then
+/// 404s on every chunk it tries to fetch — the user sees a totally
+/// unstyled dashboard with no way to recover short of `rm -rf` in the
+/// terminal. Bumping a per-version stamp file forces a clean slate
+/// exactly once per version transition.
+///
+/// We also tightened the controller's `Cache-Control` headers to
+/// `no-store` (see `next.config.ts`) so this should be belt-and-braces
+/// going forward — but the wipe still rescues users upgrading from
+/// older builds that don't have those headers.
+fn wipe_webview_cache_on_version_change(app: &tauri::App) {
+    let current_version = app.package_info().version.to_string();
+
+    let Some(state_dir) = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .or_else(|| app.path().app_config_dir().ok())
+    else {
+        return;
+    };
+    if std::fs::create_dir_all(&state_dir).is_err() {
+        return;
+    }
+    let stamp_path = state_dir.join("last-launched-version.txt");
+
+    let previous_version = std::fs::read_to_string(&stamp_path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    if previous_version == current_version {
+        return;
+    }
+
+    eprintln!(
+        "[closedmesh] version changed ({} -> {}); wiping webview cache",
+        if previous_version.is_empty() {
+            "<first launch>"
+        } else {
+            previous_version.as_str()
+        },
+        current_version
+    );
+
+    for cache_dir in webview_cache_dirs() {
+        if cache_dir.exists() {
+            let _ = std::fs::remove_dir_all(&cache_dir);
+        }
+    }
+
+    let _ = std::fs::write(&stamp_path, &current_version);
+}
+
+/// Best-effort list of disk locations the platform webview engine uses
+/// for HTTP cache + service-worker storage. We err on the side of
+/// nuking too much rather than too little — these dirs are 100%
+/// regeneratable from the .app bundle on next load.
+fn webview_cache_dirs() -> Vec<std::path::PathBuf> {
+    let bundle_id = "dev.closedmesh.shell";
+    let mut out: Vec<std::path::PathBuf> = Vec::new();
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = std::path::PathBuf::from(home);
+            out.push(home.join("Library/Caches").join(bundle_id));
+            out.push(home.join("Library/WebKit").join(bundle_id));
+            out.push(
+                home.join("Library/Application Support")
+                    .join(bundle_id)
+                    .join("Cache"),
+            );
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(cache) = std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".cache"))
+            })
+        {
+            out.push(cache.join(bundle_id));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
+            let base = std::path::PathBuf::from(local_appdata).join(bundle_id);
+            // WebView2's UserData lives under EBWebView; nuke its Cache
+            // subtree but keep the rest of the user data dir intact.
+            out.push(base.join("EBWebView").join("Default").join("Cache"));
+            out.push(base.join("EBWebView").join("Default").join("Code Cache"));
+        }
+    }
+
+    let _ = bundle_id;
+    out
 }
 
 fn open_url(_app: &AppHandle, url: &str) {

@@ -16,6 +16,30 @@ const nextConfig: NextConfig = {
     ];
   },
   async headers() {
+    // Tell HTTP caches (including WKWebView in the desktop sidecar) to
+    // *never* keep our control HTML around. Each release has new chunk
+    // hashes, and a stale cached HTML pointing at /_next/static/chunks/<old hash>
+    // 404s in the new bundle, breaking the page until the user manually
+    // wipes the webview cache. Static assets under /_next/static/* are
+    // content-addressed and stay immutable.
+    const noStore = {
+      key: "Cache-Control",
+      value: "no-store, no-cache, must-revalidate, max-age=0",
+    };
+    const controlPaths = [
+      "/dashboard",
+      "/dashboard/:path*",
+      "/models",
+      "/models/:path*",
+      "/nodes",
+      "/nodes/:path*",
+      "/chat",
+      "/chat/:path*",
+      "/logs",
+      "/logs/:path*",
+      "/settings",
+      "/settings/:path*",
+    ];
     return [
       {
         source: "/install.sh",
@@ -24,6 +48,7 @@ const nextConfig: NextConfig = {
           { key: "Cache-Control", value: "public, max-age=300, must-revalidate" },
         ],
       },
+      ...controlPaths.map((source) => ({ source, headers: [noStore] })),
     ];
   },
 };
