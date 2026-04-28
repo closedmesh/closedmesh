@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Source-of-truth icon for ClosedMesh.app / ClosedMesh.msi / ClosedMesh.AppImage.
+
+  scripts/svg-to-png.mjs rasterizes this SVG to icons/source.png at 1024x1024,
+  then `tauri icon` fans the PNG out into all the per-platform variants the
+  bundler needs (icon.icns, icon.ico, 32x32.png, 128x128.png, 128x128@2x.png,
+  plus the Windows MS Store tile sizes).
+
+  Design mirrors app/components/Logo.tsx (three peer nodes around a central
+  coordinator) so the desktop icon, the menu-bar pill, the website favicon,
+  and the in-product header logo all read as the same brand.
+
+  The peer-node colour (#ff7a45) is the same accent token defined in
+  app/globals.css and consumed by Logo.tsx via the accent CSS variable.
+  Keep the two in sync; if you ever rebrand, change both at once.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#1a1410"/>
+      <stop offset="100%" stop-color="#0a0605"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="40%" r="60%">
+      <stop offset="0%"   stop-color="rgba(255,255,255,0.06)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="url(#glow)"/>
+
+  <g transform="translate(512 512)">
+    <g stroke="#ff7a45" stroke-opacity="0.45" stroke-width="22" stroke-linecap="round" fill="none">
+      <line x1="0" y1="0" x2="0"     y2="-260"/>
+      <line x1="0" y1="0" x2="-225"  y2="130"/>
+      <line x1="0" y1="0" x2="225"   y2="130"/>
+    </g>
+
+    <g fill="#ff7a45">
+      <circle cx="0"    cy="-260" r="76"/>
+      <circle cx="-225" cy="130"  r="76"/>
+      <circle cx="225"  cy="130"  r="76"/>
+    </g>
+
+    <circle cx="0" cy="0" r="61" fill="#f0f4f8"/>
+  </g>
+</svg>
