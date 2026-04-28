@@ -242,10 +242,12 @@ install_from_local_build() {
 
 write_launchd_plist() {
     mkdir -p "$LAUNCHD_DIR" "$LOG_DIR_DARWIN" "$DATA_DIR"
-    # `--auto` makes this node discover and join the public ClosedMesh on
-    # Nostr (and become a watchdog publisher if the current publisher
-    # dies). Without it, the runtime would either be invisible to other
-    # peers (`--private-only`) or never find the mesh at all.
+    # `--auto --mesh-name closedmesh` makes this node discover and join the
+    # ClosedMesh public mesh on Nostr (the named mesh "closedmesh", whose
+    # entry point is published from our infrastructure). Without `--auto`
+    # the runtime would never find the mesh; without `--mesh-name closedmesh`
+    # it would land in the unnamed community pool of strangers' nodes
+    # instead of our mesh.
     #
     # `--headless` keeps the embedded web console on its loopback port
     # but turns off the TTY UI — matters because launchd runs the agent
@@ -262,6 +264,8 @@ write_launchd_plist() {
         <string>${INSTALL_DIR}/closedmesh</string>
         <string>serve</string>
         <string>--auto</string>
+        <string>--mesh-name</string>
+        <string>closedmesh</string>
         <string>--headless</string>
     </array>
     <key>WorkingDirectory</key>
@@ -298,7 +302,7 @@ start_launchd_service() {
 write_systemd_user_unit() {
     if ! command -v systemctl >/dev/null 2>&1; then
         warn "systemctl not found — skipping --service install."
-        warn "Run manually: $INSTALL_DIR/closedmesh serve --auto"
+        warn "Run manually: $INSTALL_DIR/closedmesh serve --auto --mesh-name closedmesh"
         return 1
     fi
 
@@ -311,7 +315,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/closedmesh serve --auto --headless
+ExecStart=${INSTALL_DIR}/closedmesh serve --auto --mesh-name closedmesh --headless
 WorkingDirectory=${HOME}
 Restart=on-failure
 RestartSec=5
@@ -455,7 +459,7 @@ main() {
 
   Try:
     closedmesh --version
-    closedmesh serve --auto              # foreground (joins the public mesh, logs in your terminal)
+    closedmesh serve --auto --mesh-name closedmesh   # foreground (joins the closedmesh public mesh, logs in your terminal)
 $( (( INSTALL_SERVICE )) && echo '    closedmesh service status            # check the autostart service' )
 $( (( INSTALL_SERVICE )) && echo '    closedmesh service stop              # stop the autostart service' )
 
