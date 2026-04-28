@@ -146,9 +146,15 @@ jobs:
             - **Linux (Debian / Ubuntu):** `*_amd64.deb`
             - **Linux (everything else):** `*_amd64.AppImage` (`chmod +x` and run)
 
-            First launch on macOS / Windows shows an "unidentified developer"
-            warning — right-click → Open → Open on Mac, or "More info → Run
-            anyway" on Windows SmartScreen. We're working on signing.
+            **First launch on macOS:** double-click → "Done" on the
+            "unidentified developer" dialog → System Settings → Privacy
+            & Security → "Open Anyway" next to the ClosedMesh notice.
+            (We ad-hoc sign the bundle, so it goes through the normal
+            Gatekeeper bypass; we're working on full notarization.)
+
+            **First launch on Windows:** the SmartScreen filter says
+            "Windows protected your PC" — click "More info" → "Run
+            anyway".
 
             The runtime (`closedmesh` CLI) installs separately via the curl /
             PowerShell one-liner from https://closedmesh.com.

@@ -238,8 +238,8 @@ export default async function DownloadPage() {
               os="macOS"
               steps={[
                 "Open the .dmg and drag ClosedMesh into Applications.",
-                "Right-click ClosedMesh in Applications → Open.",
-                'In the dialog, click "Open" again. macOS remembers; future launches are normal double-clicks.',
+                'Double-click ClosedMesh. macOS will block it once with an "unidentified developer" dialog — click "Done".',
+                'Open System Settings → Privacy & Security, scroll to the "ClosedMesh was blocked" notice, and click "Open Anyway". Confirm with Touch ID / password. Future launches are normal double-clicks.',
               ]}
             />
             <FirstLaunchCard
