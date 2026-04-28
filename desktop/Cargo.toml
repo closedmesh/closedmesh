@@ -1,8 +1,8 @@
 [package]
 name = "closedmesh-desktop"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
-description = "Cross-platform desktop shell for ClosedMesh — a private LLM mesh on the compute you already own."
+description = "Cross-platform desktop shell for ClosedMesh — an open peer-to-peer mesh of contributed compute serving open-weight models."
 license = "MIT OR Apache-2.0"
 publish = false
 
