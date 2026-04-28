@@ -53,6 +53,35 @@ On launch, `main.rs`:
 4. https://closedmesh.com                             — last resort
 ```
 
+## Pointing the sidecar at a remote mesh
+
+The sidecar binds to `127.0.0.1` on principle, but the *runtime* it
+proxies to does not have to be local. We forward three env vars from
+the desktop parent process into the Node child at spawn time:
+
+```
+CLOSEDMESH_RUNTIME_URL    e.g. https://mesh.closedmesh.com/v1
+CLOSEDMESH_RUNTIME_TOKEN  bearer secret shared with the auth gateway
+CLOSEDMESH_ADMIN_URL      e.g. https://mesh.closedmesh.com
+```
+
+When set, the bundled controller's `/api/chat` and `/api/status` routes
+talk to the public mesh entry point instead of the default
+`http://127.0.0.1:9337` local runtime. When unset, behaviour is
+unchanged — the controller looks for a local `closedmesh` CLI on the
+loopback exactly as before.
+
+This is what lets a release build of the `.app` ship pointed at the
+public mesh by default (set the env vars in the launcher / plist),
+while a `cargo run` from a developer's tree with no env set still
+exercises the local runtime end-to-end. The token stays on the desktop
+side rather than baked into the controller bundle so we can rotate it
+without re-shipping installers.
+
+Empty values are skipped on purpose — Vercel and shells alike will
+sometimes set vars to `""`, which Next.js then dutifully prefers over
+the in-code default; we don't want the same trap on the desktop.
+
 ## Why Node.js (not Bun, not single-binary)
 
 Trade-offs we considered:

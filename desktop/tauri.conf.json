@@ -17,8 +17,8 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
-    "shortDescription": "Private LLM mesh.",
-    "longDescription": "ClosedMesh runs your team's chat on hardware you own — no cloud LLM API, no data leaving the network you control. This is the desktop shell; the runtime ships separately as the `closedmesh` CLI.",
+    "shortDescription": "Open peer-to-peer LLM mesh.",
+    "longDescription": "ClosedMesh is an open peer-to-peer mesh of contributed machines serving open-weight models — chat from the website or this desktop app, run a node and add your hardware to the mesh, no third-party AI API in the loop.",
     "copyright": "Apache-2.0 / MIT",
     "icon": [
       "icons/32x32.png",

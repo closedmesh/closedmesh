@@ -72,6 +72,21 @@ fn sidecar_node_filename_candidates() -> [&'static str; 2] {
     }
 }
 
+/// Env vars that select which runtime the bundled Next.js controller
+/// proxies to. We forward them from the desktop process to the Node
+/// sidecar so a release build can ship pointed at the public mesh
+/// (`https://mesh.closedmesh.com/v1`) by setting them at launch, while
+/// dev builds with no env set keep the existing local default
+/// (`http://127.0.0.1:9337/v1`). The token is the bearer secret shared
+/// with whatever auth gateway sits in front of the public mesh; keeping
+/// it on the desktop side rather than baked into the controller bundle
+/// means we can rotate it without re-shipping the .app.
+const RUNTIME_TARGET_ENV_KEYS: &[&str] = &[
+    "CLOSEDMESH_RUNTIME_URL",
+    "CLOSEDMESH_RUNTIME_TOKEN",
+    "CLOSEDMESH_ADMIN_URL",
+];
+
 /// The port we'd LIKE the bundled controller to bind. Matches the
 /// existing `localhost:3000` convention so that:
 ///
@@ -236,7 +251,8 @@ impl Sidecar {
             None => (Stdio::null(), Stdio::null()),
         };
 
-        let child = Command::new(&node)
+        let mut command = Command::new(&node);
+        command
             .arg(&server_js)
             // Next.js standalone reads HOSTNAME / PORT and binds there.
             // 127.0.0.1 (not 0.0.0.0) is deliberate — the controller is
@@ -255,7 +271,28 @@ impl Sidecar {
             // /api/control/update-check.
             .env("CLOSEDMESH_APP_VERSION", env!("CARGO_PKG_VERSION"))
             .env("CLOSEDMESH_HOST_OS", host_os_label())
-            .env("CLOSEDMESH_HOST_ARCH", host_arch_label())
+            .env("CLOSEDMESH_HOST_ARCH", host_arch_label());
+
+        // Forward runtime-target env vars when set in the parent process.
+        // This is what lets the .app talk to a remote mesh entry point
+        // (e.g. `https://mesh.closedmesh.com/v1`) instead of the default
+        // local `127.0.0.1:9337` runtime — useful both for production
+        // builds that ship pointed at the public mesh and for staging /
+        // dev where we want the bundled controller pointed at a remote
+        // host. We pass them through individually rather than inheriting
+        // the entire parent env so we don't accidentally leak shell
+        // state into the Node child. Empty values are skipped — Vercel
+        // and shells alike sometimes set vars to "" which Next.js then
+        // dutifully prefers over the in-code default.
+        for key in RUNTIME_TARGET_ENV_KEYS {
+            if let Ok(value) = std::env::var(key) {
+                if !value.is_empty() {
+                    command.env(key, value);
+                }
+            }
+        }
+
+        let child = command
             // Run from the controller dir so relative paths inside the
             // standalone bundle resolve correctly.
             .current_dir(&controller_dir)

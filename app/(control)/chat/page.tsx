@@ -55,9 +55,9 @@ export default function ChatPage() {
 
 function ControlEmptyState() {
   const suggestions = [
-    "Summarize a 1-paragraph pitch for our team.",
-    "Write a Slack message inviting teammates to share their GPU.",
-    "Explain how a mesh-served LLM differs from cloud inference.",
+    "Write a polite email canceling tomorrow's meeting.",
+    "Explain compound interest to a curious 12-year-old.",
+    "Plan a 3-day weekend in Lisbon with one rainy day.",
   ];
   return (
     <div className="relative mx-auto max-w-xl py-16 text-center">
@@ -71,10 +71,10 @@ function ControlEmptyState() {
       />
       <div className="relative">
         <div className="text-balance text-3xl font-semibold tracking-tight">
-          Your team&apos;s private LLM.
+          Open peer-to-peer LLM.
         </div>
         <div className="mt-2 text-pretty text-sm text-[var(--fg-muted)]">
-          Running on machines you own. Nothing leaves the mesh.
+          Served by a peer in the mesh. Your machine helps too.
         </div>
         <ul className="mt-8 space-y-2 text-left">
           {suggestions.map((s) => (

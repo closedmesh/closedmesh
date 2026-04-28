@@ -177,20 +177,20 @@ function Hero({
       </div>
 
       <h1 className="text-balance text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl">
-        A private LLM,
+        Run a ClosedMesh node.
         <br />
-        on your own machines.
+        Add your hardware to the mesh.
       </h1>
       <p className="mt-5 max-w-xl text-pretty text-[15px] leading-relaxed text-[var(--fg-muted)] sm:text-base">
-        ClosedMesh runs on the hardware you already own. Pool it with your
-        team and you get a fast, private AI that never sends your prompts
-        to anyone else&apos;s server.
+        Installing the runtime joins this machine to the open peer-to-peer
+        mesh. You&apos;ll be able to chat without internet, and your
+        hardware contributes compute to whoever else is using ClosedMesh.
       </p>
 
       <div className="mt-7 flex flex-wrap justify-center gap-2 text-[11px]">
-        <Pill>Your data never leaves your network</Pill>
-        <Pill>No API bills</Pill>
-        <Pill>Works with your team&apos;s laptops</Pill>
+        <Pill>No third-party LLM API</Pill>
+        <Pill>Open-weight models</Pill>
+        <Pill>Mac · Linux · Windows</Pill>
       </div>
 
       <div className="mt-10 flex w-full max-w-md flex-col items-center gap-4">
