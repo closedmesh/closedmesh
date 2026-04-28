@@ -1,0 +1,45 @@
+[package]
+name = "closedmesh-desktop"
+version = "0.1.3"
+edition = "2021"
+description = "Cross-platform desktop shell for ClosedMesh — a private LLM mesh on the compute you already own."
+license = "MIT OR Apache-2.0"
+publish = false
+
+# The compiled binary is what Tauri's bundler ships inside .app / .msi /
+# .AppImage / .deb. Keep the binary name aligned with `productName` so the
+# bundles look consistent across platforms.
+[[bin]]
+name = "closedmesh"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `tray-icon` is the cross-platform menu-bar / system-tray API. `image-png`
+# lets us load the runtime tray glyph from PNG without an extra crate.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Lightweight blocking HTTP for status polling. We poll a single localhost
+# endpoint every few seconds, so blocking + small TLS stack (rustls, no
+# system OpenSSL) is the right tradeoff vs. dragging in a full async client.
+ureq = { version = "2", default-features = false, features = ["json", "rustls"] }
+
+# Cross-platform clipboard for the "Copy Invite Token" menu action. Tauri's
+# clipboard plugin would also work but pulls in IPC plumbing we don't need
+# from the Rust side.
+arboard = "3"
+
+# Single-shot env var lookups; `dirs` for resolving ~/Library/Logs etc.
+dirs = "5"
+
+[profile.release]
+# A single-binary GUI shell doesn't benefit from the default codegen units;
+# squeeze the binary instead. Saves ~25% on the macOS .app size.
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
