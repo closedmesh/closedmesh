@@ -1,7 +1,7 @@
 {
   "name": "closedmesh-desktop",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Cross-platform desktop shell for ClosedMesh (Tauri 2).",
   "scripts": {
     "tauri": "tauri",

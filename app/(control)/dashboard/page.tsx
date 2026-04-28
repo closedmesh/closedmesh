@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { Setup } from "../../components/Setup";
+import { MODEL_CATALOG, type CatalogModel } from "../../lib/model-catalog";
 import { useMeshStatus, type NodeSummary } from "../../lib/use-mesh-status";
 
 type ServiceState =
@@ -35,6 +36,41 @@ type RepairResp = {
   applied?: Array<{ kind: RepairIssue["kind"]; ok: boolean; message: string }>;
 };
 
+type StartupModel = { model: string; ctxSize?: number };
+type StartupResp =
+  | {
+      ok: true;
+      models: StartupModel[];
+      configPath: string;
+      restart?: { ok: boolean; message: string };
+    }
+  | { ok: false; message: string };
+
+type LocalModel = { id: string; sizeBytes: number | null };
+type ListResp =
+  | { ok: true; models: LocalModel[] }
+  | { ok: false; message: string; models: LocalModel[] };
+
+type DownloadEvent =
+  | { kind: "stdout" | "stderr"; text: string }
+  | { kind: "progress"; percent: number; bytes: number; total: number }
+  | { kind: "done"; ok: boolean; code: number }
+  | { kind: "error"; message: string };
+
+type QuickStartPhase =
+  | { kind: "idle" }
+  | {
+      kind: "downloading";
+      modelId: string;
+      percent: number;
+      bytes: number;
+      total: number;
+      lastLine: string;
+    }
+  | { kind: "loading"; modelId: string; message: string }
+  | { kind: "done"; modelId: string }
+  | { kind: "failed"; modelId: string; error: string };
+
 const BACKEND_LABEL: Record<string, string> = {
   metal: "Apple Metal",
   cuda: "NVIDIA CUDA",
@@ -47,10 +83,13 @@ export default function DashboardPage() {
   const mesh = useMeshStatus();
   const [control, setControl] = useState<ControlStatus | null>(null);
   const [busy, setBusy] = useState<
-    "start" | "stop" | "invite" | "repair" | null
+    "start" | "stop" | "invite" | "repair" | "quickstart" | null
   >(null);
   const [toast, setToast] = useState<string | null>(null);
   const [repair, setRepair] = useState<RepairResp | null>(null);
+  const [startup, setStartup] = useState<StartupModel[] | null>(null);
+  const [localModels, setLocalModels] = useState<LocalModel[] | null>(null);
+  const [quickStart, setQuickStart] = useState<QuickStartPhase>({ kind: "idle" });
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -76,14 +115,49 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const refreshStartup = useCallback(async () => {
+    try {
+      const res = await fetch("/api/control/models/startup", {
+        cache: "no-store",
+      });
+      const data = (await res.json()) as StartupResp;
+      if (data.ok) setStartup(data.models);
+    } catch {
+      // controller off — quick-start CTA just stays hidden
+    }
+  }, []);
+
+  const refreshLocalModels = useCallback(async () => {
+    try {
+      const res = await fetch("/api/control/models/list", {
+        cache: "no-store",
+      });
+      const data = (await res.json()) as ListResp;
+      setLocalModels(data.models);
+    } catch {
+      // controller off — quick-start treats "unknown" as "none"
+    }
+  }, []);
+
   useEffect(() => {
     refresh();
     refreshRepair();
-    refreshTimer.current = setInterval(refresh, 4000);
+    refreshStartup();
+    refreshLocalModels();
+    // Refresh control status every 4s (cheap), startup config + local
+    // models every 12s (read disk on each call, less critical).
+    refreshTimer.current = setInterval(() => {
+      refresh();
+    }, 4000);
+    const slowTick = setInterval(() => {
+      refreshStartup();
+      refreshLocalModels();
+    }, 12_000);
     return () => {
       if (refreshTimer.current) clearInterval(refreshTimer.current);
+      clearInterval(slowTick);
     };
-  }, [refresh, refreshRepair]);
+  }, [refresh, refreshRepair, refreshStartup, refreshLocalModels]);
 
   const runRepair = useCallback(async () => {
     setBusy("repair");
@@ -123,6 +197,149 @@ export default function DashboardPage() {
     [refresh],
   );
 
+  /**
+   * One-click "download a sensible model + set it as the startup model
+   * + bounce the runtime so it actually loads". This is the bit that's
+   * been missing on the dashboard — sending users to /models to figure
+   * out which 0.4–40 GB blob to pick is a terrible first-run UX. Here
+   * we make that decision for them based on detected hardware.
+   *
+   * The download endpoint streams NDJSON; we render a real progress bar.
+   * Once the file is on disk we POST to /api/control/models/startup,
+   * which writes [[models]] in config.toml and bounces the autostart
+   * unit so the runtime loads it. The poll loop above picks that up
+   * within ~4–8 s and the card swaps for the loaded-model UI.
+   */
+  const runQuickStart = useCallback(
+    async (choice: CatalogModel) => {
+      setBusy("quickstart");
+      setToast(null);
+      setQuickStart({
+        kind: "downloading",
+        modelId: choice.id,
+        percent: 0,
+        bytes: 0,
+        total: 0,
+        lastLine: "starting…",
+      });
+
+      try {
+        const dlRes = await fetch("/api/control/models/download", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: choice.id }),
+        });
+        if (!dlRes.ok || !dlRes.body) {
+          let msg = `request returned ${dlRes.status}`;
+          try {
+            const err = (await dlRes.json()) as { message?: string };
+            msg = err.message ?? msg;
+          } catch {
+            // body is the stream — already consumed
+          }
+          setQuickStart({ kind: "failed", modelId: choice.id, error: msg });
+          setBusy(null);
+          return;
+        }
+
+        const reader = dlRes.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let okFinal: boolean | null = null;
+        let errMsg: string | null = null;
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n");
+          buffer = parts.pop() ?? "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line) continue;
+            let ev: DownloadEvent;
+            try {
+              ev = JSON.parse(line) as DownloadEvent;
+            } catch {
+              continue;
+            }
+            if (ev.kind === "progress") {
+              setQuickStart((q) =>
+                q.kind === "downloading" && q.modelId === choice.id
+                  ? {
+                      ...q,
+                      percent: ev.percent,
+                      bytes: ev.bytes,
+                      total: ev.total,
+                    }
+                  : q,
+              );
+            } else if (ev.kind === "stdout" || ev.kind === "stderr") {
+              setQuickStart((q) =>
+                q.kind === "downloading" && q.modelId === choice.id
+                  ? { ...q, lastLine: ev.text }
+                  : q,
+              );
+            } else if (ev.kind === "done") {
+              okFinal = ev.ok;
+            } else if (ev.kind === "error") {
+              errMsg = ev.message;
+            }
+          }
+        }
+
+        if (okFinal !== true) {
+          setQuickStart({
+            kind: "failed",
+            modelId: choice.id,
+            error:
+              errMsg ?? "Download didn't finish cleanly — see Activity for the full log.",
+          });
+          setBusy(null);
+          return;
+        }
+
+        setQuickStart({
+          kind: "loading",
+          modelId: choice.id,
+          message: "Loading the model into the runtime…",
+        });
+
+        const startupRes = await fetch("/api/control/models/startup", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: choice.id }),
+        });
+        const startupData = (await startupRes.json()) as StartupResp;
+
+        if (startupData.ok) {
+          setStartup(startupData.models);
+          setQuickStart({ kind: "done", modelId: choice.id });
+          setToast(
+            startupData.restart?.message ??
+              "Loaded. The runtime is restarting with this model.",
+          );
+        } else {
+          setQuickStart({
+            kind: "failed",
+            modelId: choice.id,
+            error: startupData.message,
+          });
+        }
+        await Promise.all([refresh(), refreshLocalModels()]);
+      } catch (e) {
+        setQuickStart({
+          kind: "failed",
+          modelId: choice.id,
+          error: e instanceof Error ? e.message : "request failed",
+        });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refresh, refreshLocalModels],
+  );
+
   const copyInvite = useCallback(async () => {
     setBusy("invite");
     setToast(null);
@@ -155,6 +372,32 @@ export default function DashboardPage() {
   const running = control?.service.state === "running";
   const stopped = control?.service.state === "stopped";
 
+  const selfVram = selfNode?.capability.vramGb ?? selfNode?.vramGb ?? 0;
+  const selfBackend = selfNode?.capability.backend ?? "cpu";
+  const loadedHere = selfNode?.capability.loadedModels ?? [];
+  const startupConfigured = (startup ?? []).length > 0;
+  const localModelIds = new Set((localModels ?? []).map((m) => m.id));
+  const recommendation = pickRecommendedModel(selfVram, selfBackend);
+  const alreadyDownloaded = recommendation
+    ? localModelIds.has(recommendation.id)
+    : false;
+
+  // Show the quick-start card whenever the runtime is reachable but
+  // hasn't been told what to load yet. We deliberately don't gate on
+  // `running` — if the service is stopped *and* unconfigured, getting
+  // the user a model is the highest-leverage thing we can do; setting
+  // a startup model bounces the runtime as a side effect, which lights
+  // it up too. Skip when actively loading a model the user already
+  // chose, when one is already serving, or during the explicit
+  // "downloading" phase (the card itself takes over rendering).
+  const showQuickStart =
+    !!control &&
+    control.available &&
+    !control.publicDeployment &&
+    loadedHere.length === 0 &&
+    !startupConfigured &&
+    !!recommendation;
+
   if (control?.publicDeployment && !mesh.online && !mesh.loading) {
     return <PublicNoMesh />;
   }
@@ -183,10 +426,27 @@ export default function DashboardPage() {
             self={selfNode}
             running={running}
             stopped={stopped}
+            startupConfigured={startupConfigured}
             busy={busy}
             onStart={() => act("start")}
             onStop={() => act("stop")}
           />
+
+          {showQuickStart && recommendation && (
+            <QuickStartCard
+              choice={recommendation}
+              alreadyDownloaded={alreadyDownloaded}
+              phase={quickStart}
+              busy={busy === "quickstart"}
+              onStart={() => runQuickStart(recommendation)}
+            />
+          )}
+
+          {!showQuickStart && startupConfigured && loadedHere.length === 0 && (
+            <ModelLoadingCard
+              startupModelId={startup?.[0]?.model ?? "unknown"}
+            />
+          )}
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <SummaryStat
@@ -275,6 +535,7 @@ function ThisNodeCard({
   self,
   running,
   stopped,
+  startupConfigured,
   busy,
   onStart,
   onStop,
@@ -282,7 +543,8 @@ function ThisNodeCard({
   self: NodeSummary | null;
   running: boolean;
   stopped: boolean;
-  busy: "start" | "stop" | "invite" | "repair" | null;
+  startupConfigured: boolean;
+  busy: "start" | "stop" | "invite" | "repair" | "quickstart" | null;
   onStart: () => void;
   onStop: () => void;
 }) {
@@ -294,12 +556,13 @@ function ThisNodeCard({
   // The runtime can be "running" without actually serving traffic — that
   // happens when the autostart unit boots `closedmesh serve --auto` but
   // no model is configured in ~/.closedmesh/config.toml yet. Surface that
-  // state honestly instead of telling the user they're "sharing" when
-  // they aren't yet.
+  // state honestly. The Quick-start card below this one offers the fix.
   const statusText = running
     ? loaded.length > 0
       ? "Sharing this machine with your mesh"
-      : "Running, but no model loaded yet — pick one from Models"
+      : startupConfigured
+        ? "Loading the startup model…"
+        : "Running. Load a model below to start serving."
     : stopped
       ? "Not running. Start to share this machine."
       : "Checking status…";
@@ -422,6 +685,190 @@ function SummaryStat({
   );
 }
 
+/**
+ * Pick a "first model" recommendation given the local node's reported
+ * capacity. We bias toward something that'll actually run on the user's
+ * hardware (no pointing a CPU-only laptop at a 72B model) while still
+ * picking something useful enough that the chat feels real.
+ *
+ *   - 8 GB of VRAM/UMA + a real GPU backend → Qwen 3 8B (the demo model)
+ *   - 4–8 GB or CPU-only on a fast machine → Phi-3 mini (cpuOk, 2.5 GB)
+ *   - tiny / unknown → Qwen 3 0.6B smoke-test (cpuOk, 0.4 GB)
+ *
+ * Returns null only if the catalog is empty (shouldn't happen).
+ */
+function pickRecommendedModel(
+  vramGb: number,
+  backend: string,
+): CatalogModel | null {
+  const hasGpu = backend !== "cpu" && backend !== "" && backend !== "unknown";
+  const candidates = MODEL_CATALOG.filter((m) => {
+    if (vramGb >= m.minVramGb) return true;
+    return m.cpuOk === true && vramGb === 0;
+  });
+  if (candidates.length === 0) return MODEL_CATALOG[0] ?? null;
+
+  const eightB = candidates.find((m) => m.id === "Qwen3-8B-Q4_K_M");
+  if (eightB && vramGb >= eightB.minVramGb && hasGpu) return eightB;
+
+  const phi = candidates.find((m) => m.id === "Phi-3-mini-4k-Q4_K_M");
+  if (phi && vramGb >= phi.minVramGb) return phi;
+
+  const smokeTest = MODEL_CATALOG.find((m) => m.id === "Qwen3-0.6B-Q4_K_M");
+  return smokeTest ?? candidates[0] ?? null;
+}
+
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = bytes;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function QuickStartCard({
+  choice,
+  alreadyDownloaded,
+  phase,
+  busy,
+  onStart,
+}: {
+  choice: CatalogModel;
+  alreadyDownloaded: boolean;
+  phase: QuickStartPhase;
+  busy: boolean;
+  onStart: () => void;
+}) {
+  const isDownloading = phase.kind === "downloading";
+  const isLoading = phase.kind === "loading";
+  const failed = phase.kind === "failed";
+  const showProgress = isDownloading || isLoading;
+
+  return (
+    <section className="relative overflow-hidden rounded-2xl border border-[var(--accent)]/40 bg-[var(--bg-elev)] p-6">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -left-20 -bottom-20 h-64 w-64 rounded-full"
+        style={{
+          background:
+            "radial-gradient(circle, rgba(255,122,69,0.18), transparent 70%)",
+        }}
+      />
+      <div className="relative flex flex-wrap items-start justify-between gap-5">
+        <div className="min-w-0 max-w-2xl">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--accent)]">
+            Quick start
+          </div>
+          <div className="mt-0.5 text-xl font-semibold tracking-tight">
+            Load {choice.name} and start chatting
+          </div>
+          <p className="mt-1.5 text-[13px] leading-relaxed text-[var(--fg-muted)]">
+            {choice.description}
+          </p>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[11px] text-[var(--fg-muted)]">
+            <span className="rounded-full border border-[var(--border)] bg-[var(--bg-elev-2)] px-2 py-0.5 font-mono text-[10px] text-[var(--fg)]">
+              {choice.id}
+            </span>
+            <span>~{choice.sizeGb.toFixed(1)} GB download</span>
+            <span aria-hidden>·</span>
+            <span>needs ≥ {choice.minVramGb} GB memory</span>
+            {alreadyDownloaded && !showProgress && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="text-emerald-300">
+                  already downloaded — will load instantly
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <button
+            onClick={onStart}
+            disabled={busy || showProgress}
+            className="rounded-lg bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-black shadow-[0_8px_24px_-12px_rgba(255,122,69,0.7)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {phase.kind === "downloading"
+              ? `Downloading… ${phase.percent.toFixed(0)}%`
+              : phase.kind === "loading"
+                ? "Loading…"
+                : alreadyDownloaded
+                  ? "Load and start chatting"
+                  : "Download and start chatting"}
+          </button>
+          <Link
+            href="/models"
+            className="text-[11px] text-[var(--fg-muted)] hover:text-[var(--accent)]"
+          >
+            Pick a different model →
+          </Link>
+        </div>
+      </div>
+
+      {phase.kind === "downloading" && (
+        <div className="relative mt-5">
+          <div className="h-1.5 overflow-hidden rounded-full bg-[var(--bg-elev-2)]">
+            <div
+              className="h-full bg-[var(--accent)] transition-[width] duration-300"
+              style={{ width: `${Math.max(2, phase.percent)}%` }}
+            />
+          </div>
+          <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-[var(--fg-muted)]">
+            <span className="truncate font-mono">{phase.lastLine}</span>
+            <span className="shrink-0 tabular-nums">
+              {phase.total > 0
+                ? `${formatBytes(phase.bytes)} / ${formatBytes(phase.total)}`
+                : ""}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {phase.kind === "loading" && (
+        <div className="relative mt-5 rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2.5 text-xs text-[var(--fg-muted)]">
+          {phase.message}
+        </div>
+      )}
+
+      {failed && (
+        <div className="relative mt-5 rounded-lg border border-rose-400/40 bg-rose-400/5 px-3 py-2.5 text-xs text-rose-200">
+          {phase.error} — try again, or open Activity for the full log.
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ModelLoadingCard({ startupModelId }: { startupModelId: string }) {
+  return (
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-elev)] p-5">
+      <div className="flex items-center gap-3">
+        <span
+          aria-hidden
+          className="inline-block h-2 w-2 animate-pulse rounded-full bg-[var(--accent)]"
+        />
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--accent)]">
+            Loading model
+          </div>
+          <div className="mt-0.5 truncate font-mono text-sm text-[var(--fg)]">
+            {startupModelId}
+          </div>
+          <div className="mt-1 text-[11px] text-[var(--fg-muted)]">
+            The runtime is restarting with this model. Usually under a minute on
+            local SSDs.
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function QuickActions({
   running,
   busy,
@@ -429,7 +876,7 @@ function QuickActions({
   toast,
 }: {
   running: boolean;
-  busy: "start" | "stop" | "invite" | "repair" | null;
+  busy: "start" | "stop" | "invite" | "repair" | "quickstart" | null;
   onCopyInvite: () => void;
   toast: string | null;
 }) {
