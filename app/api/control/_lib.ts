@@ -31,8 +31,27 @@ const candidates = [
 
 let cachedBin: string | null = null;
 
+/**
+ * Locate the closedmesh runtime binary on disk.
+ *
+ * We cache the resolved path because `/api/control/status` polls every 4s
+ * and stat'ing 6+ candidate paths on every poll is wasteful. But we
+ * *re-verify* the cached path is still executable before returning it —
+ * otherwise an uninstall (whether through the UI's `service uninstall`
+ * flow or a manual `rm`) leaves the dashboard claiming the runtime is
+ * still here, never showing the Setup screen again until the controller
+ * is restarted. Re-stat'ing one path is essentially free.
+ */
 export async function findClosedmeshBin(): Promise<string | null> {
-  if (cachedBin) return cachedBin;
+  if (cachedBin) {
+    try {
+      const stat = await fs.stat(cachedBin);
+      if (stat.isFile() && (stat.mode & 0o111) !== 0) return cachedBin;
+    } catch {
+      // fall through and rescan; the cached path is no longer valid
+    }
+    cachedBin = null;
+  }
   for (const candidate of candidates) {
     try {
       const stat = await fs.stat(candidate);
