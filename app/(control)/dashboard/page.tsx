@@ -19,6 +19,22 @@ type ControlStatus = {
   publicDeployment: boolean;
 };
 
+type RepairIssue = {
+  kind:
+    | "private-only-launchd"
+    | "private-only-systemd"
+    | "private-only-schtasks";
+  message: string;
+  unit: string;
+  fixable: boolean;
+};
+
+type RepairResp = {
+  ok: boolean;
+  issues: RepairIssue[];
+  applied?: Array<{ kind: RepairIssue["kind"]; ok: boolean; message: string }>;
+};
+
 const BACKEND_LABEL: Record<string, string> = {
   metal: "Apple Metal",
   cuda: "NVIDIA CUDA",
@@ -30,8 +46,11 @@ const BACKEND_LABEL: Record<string, string> = {
 export default function DashboardPage() {
   const mesh = useMeshStatus();
   const [control, setControl] = useState<ControlStatus | null>(null);
-  const [busy, setBusy] = useState<"start" | "stop" | "invite" | null>(null);
+  const [busy, setBusy] = useState<
+    "start" | "stop" | "invite" | "repair" | null
+  >(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [repair, setRepair] = useState<RepairResp | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -44,12 +63,46 @@ export default function DashboardPage() {
     }
   }, []);
 
+  // Cheap diagnostic poll — runs once at mount and after every repair
+  // attempt. Doesn't piggyback on /api/control/status because we don't
+  // want to read the launchd plist on every 4-second tick.
+  const refreshRepair = useCallback(async () => {
+    try {
+      const res = await fetch("/api/control/repair", { cache: "no-store" });
+      const data = (await res.json()) as RepairResp;
+      setRepair(data);
+    } catch {
+      // controller off — banner just stays hidden
+    }
+  }, []);
+
   useEffect(() => {
     refresh();
+    refreshRepair();
     refreshTimer.current = setInterval(refresh, 4000);
     return () => {
       if (refreshTimer.current) clearInterval(refreshTimer.current);
     };
+  }, [refresh, refreshRepair]);
+
+  const runRepair = useCallback(async () => {
+    setBusy("repair");
+    setToast(null);
+    try {
+      const res = await fetch("/api/control/repair", { method: "POST" });
+      const data = (await res.json()) as RepairResp;
+      setRepair(data);
+      const summary = (data.applied ?? [])
+        .map((a) => a.message)
+        .filter(Boolean)
+        .join(" ");
+      setToast(summary || "Repair complete.");
+      await refresh();
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : "request failed");
+    } finally {
+      setBusy(null);
+    }
   }, [refresh]);
 
   const act = useCallback(
@@ -118,6 +171,14 @@ export default function DashboardPage() {
 
       <main className="flex-1 overflow-y-auto scrollbar-thin">
         <div className="mx-auto flex max-w-5xl flex-col gap-5 px-6 py-6">
+          {repair && repair.issues.length > 0 && (
+            <RepairBanner
+              issues={repair.issues}
+              busy={busy === "repair"}
+              onRepair={runRepair}
+            />
+          )}
+
           <ThisNodeCard
             self={selfNode}
             running={running}
@@ -168,6 +229,48 @@ export default function DashboardPage() {
   );
 }
 
+function RepairBanner({
+  issues,
+  busy,
+  onRepair,
+}: {
+  issues: RepairIssue[];
+  busy: boolean;
+  onRepair: () => void;
+}) {
+  const fixable = issues.some((i) => i.fixable);
+  return (
+    <section className="rounded-2xl border border-amber-400/40 bg-amber-400/5 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 max-w-2xl">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-amber-300">
+            Heads-up — autostart needs a fix
+          </div>
+          <ul className="mt-1.5 space-y-1.5 text-sm text-[var(--fg)]">
+            {issues.map((i) => (
+              <li key={i.kind}>
+                <span>{i.message}</span>
+                <span className="ml-1 font-mono text-[11px] text-[var(--fg-muted)]">
+                  ({i.unit})
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        {fixable && (
+          <button
+            onClick={onRepair}
+            disabled={busy}
+            className="rounded-lg bg-amber-400 px-4 py-2 text-xs font-semibold text-black transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy ? "Repairing…" : "Repair now"}
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function ThisNodeCard({
   self,
   running,
@@ -179,7 +282,7 @@ function ThisNodeCard({
   self: NodeSummary | null;
   running: boolean;
   stopped: boolean;
-  busy: "start" | "stop" | "invite" | null;
+  busy: "start" | "stop" | "invite" | "repair" | null;
   onStart: () => void;
   onStop: () => void;
 }) {
@@ -188,8 +291,15 @@ function ThisNodeCard({
   const vram = cap?.vramGb ?? self?.vramGb ?? 0;
   const loaded = cap?.loadedModels ?? [];
 
+  // The runtime can be "running" without actually serving traffic — that
+  // happens when the autostart unit boots `closedmesh serve --auto` but
+  // no model is configured in ~/.closedmesh/config.toml yet. Surface that
+  // state honestly instead of telling the user they're "sharing" when
+  // they aren't yet.
   const statusText = running
-    ? "Sharing this machine with your mesh"
+    ? loaded.length > 0
+      ? "Sharing this machine with your mesh"
+      : "Running, but no model loaded yet — pick one from Models"
     : stopped
       ? "Not running. Start to share this machine."
       : "Checking status…";
@@ -319,7 +429,7 @@ function QuickActions({
   toast,
 }: {
   running: boolean;
-  busy: "start" | "stop" | "invite" | null;
+  busy: "start" | "stop" | "invite" | "repair" | null;
   onCopyInvite: () => void;
   toast: string | null;
 }) {

@@ -242,6 +242,14 @@ install_from_local_build() {
 
 write_launchd_plist() {
     mkdir -p "$LAUNCHD_DIR" "$LOG_DIR_DARWIN" "$DATA_DIR"
+    # `--auto` makes this node discover and join the public ClosedMesh on
+    # Nostr (and become a watchdog publisher if the current publisher
+    # dies). Without it, the runtime would either be invisible to other
+    # peers (`--private-only`) or never find the mesh at all.
+    #
+    # `--headless` keeps the embedded web console on its loopback port
+    # but turns off the TTY UI — matters because launchd runs the agent
+    # without a real terminal.
     cat >"$LAUNCHD_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -253,7 +261,7 @@ write_launchd_plist() {
     <array>
         <string>${INSTALL_DIR}/closedmesh</string>
         <string>serve</string>
-        <string>--private-only</string>
+        <string>--auto</string>
         <string>--headless</string>
     </array>
     <key>WorkingDirectory</key>
@@ -290,20 +298,20 @@ start_launchd_service() {
 write_systemd_user_unit() {
     if ! command -v systemctl >/dev/null 2>&1; then
         warn "systemctl not found — skipping --service install."
-        warn "Run manually: $INSTALL_DIR/closedmesh serve --private-only"
+        warn "Run manually: $INSTALL_DIR/closedmesh serve --auto"
         return 1
     fi
 
     mkdir -p "$SYSTEMD_USER_DIR" "$LOG_DIR_LINUX" "$DATA_DIR"
     cat >"$SYSTEMD_UNIT" <<UNIT
 [Unit]
-Description=ClosedMesh — private LLM mesh node
+Description=ClosedMesh — peer-to-peer LLM mesh node
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/closedmesh serve --private-only --headless
+ExecStart=${INSTALL_DIR}/closedmesh serve --auto --headless
 WorkingDirectory=${HOME}
 Restart=on-failure
 RestartSec=5
@@ -358,6 +366,47 @@ install_service() {
     esac
 }
 
+# Drop a default ~/.closedmesh/config.toml on first install so the runtime
+# has something to load. `closedmesh serve` exits with a "needs at least one
+# startup model" warning if neither config nor --model is supplied; that's
+# the right behavior for the CLI but a bad first-run experience for the
+# desktop app, which can't easily edit launchd args after the fact. The
+# stub here lists the recommended-for-Apple-Silicon model commented out so
+# users can uncomment after `closedmesh download Qwen3-8B-Q4_K_M`.
+seed_default_config() {
+    mkdir -p "$DATA_DIR"
+    local cfg="$DATA_DIR/config.toml"
+    if [[ -f "$cfg" ]]; then
+        info "Existing config preserved: $cfg"
+        return 0
+    fi
+    cat >"$cfg" <<'TOML'
+# ClosedMesh node config — written by the installer on first run.
+#
+# At least one [[models]] entry must be uncommented (and the matching
+# model downloaded with `closedmesh download <id>`) before the runtime
+# will start serving. Pick whichever fits your machine:
+#
+#   closedmesh gpus                       # what backend / how much VRAM
+#   closedmesh models recommended         # the curated catalog
+#   closedmesh download Qwen3-8B-Q4_K_M   # ~5 GB, fits an M2/M3 Mac
+#
+# Then uncomment the matching block below and restart the service:
+#
+#   closedmesh service stop
+#   closedmesh service start
+
+# [[models]]
+# model = "Qwen3-8B-Q4_K_M"
+# ctx_size = 8192
+
+# [[models]]
+# model = "Qwen2.5-3B-Instruct-Q4_K_M"
+# ctx_size = 4096
+TOML
+    ok "Wrote starter config: $cfg"
+}
+
 ensure_path_hint() {
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) return 0 ;;
@@ -392,6 +441,8 @@ main() {
         exit 1
     }
 
+    seed_default_config
+
     if (( INSTALL_SERVICE )); then
         install_service
     fi
@@ -404,7 +455,7 @@ main() {
 
   Try:
     closedmesh --version
-    closedmesh serve --private-only      # foreground (logs in your terminal)
+    closedmesh serve --auto              # foreground (joins the public mesh, logs in your terminal)
 $( (( INSTALL_SERVICE )) && echo '    closedmesh service status            # check the autostart service' )
 $( (( INSTALL_SERVICE )) && echo '    closedmesh service stop              # stop the autostart service' )
 

@@ -153,7 +153,11 @@ function Install-ScheduledTaskUnit {
     # installer idempotent.
     schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null
 
-    $action    = New-ScheduledTaskAction    -Execute $bin -Argument 'serve --private-only --headless' -WorkingDirectory $env:USERPROFILE
+    # `serve --auto` discovers and joins the public ClosedMesh on Nostr
+    # (or becomes a watchdog publisher if needed). Don't pass --private-only
+    # here — that would hide the node from other peers and from the public
+    # entry that closedmesh.com proxies through.
+    $action    = New-ScheduledTaskAction    -Execute $bin -Argument 'serve --auto --headless' -WorkingDirectory $env:USERPROFILE
     $trigger   = New-ScheduledTaskTrigger   -AtLogOn -User $env:USERNAME
     $settings  = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
@@ -212,7 +216,7 @@ function Invoke-Install {
     Write-Host ''
     Write-Host '  Try:'
     Write-Host '    closedmesh --version'
-    Write-Host '    closedmesh serve --private-only      # foreground (logs in your terminal)'
+    Write-Host '    closedmesh serve --auto              # foreground (joins the public mesh)'
     if ($Service) {
         Write-Host "    Get-ScheduledTask -TaskName $TaskName | Get-ScheduledTaskInfo  # service status"
         Write-Host "    Stop-ScheduledTask -TaskName $TaskName                          # stop the service"

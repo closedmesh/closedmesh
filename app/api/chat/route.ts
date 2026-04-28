@@ -50,6 +50,31 @@ async function pickDefaultModel(): Promise<string> {
   );
 }
 
+/**
+ * System prompt prepended to every conversation.
+ *
+ * Open-weight models will faithfully self-identify by their lineage when
+ * asked "where do you run" — GLM says "Z.ai", Qwen says "Alibaba", Llama
+ * says "Meta". That's accurate from the model's POV (it knows who *trained*
+ * it) but actively misleading for our users: ClosedMesh routes their
+ * prompt to a peer running the open weights, not to any of those vendors'
+ * APIs. This prompt corrects the runtime-location story without trying
+ * to suppress the model's identity.
+ *
+ * Kept short and factual on purpose. We don't want to inject a persona,
+ * a tone, or product marketing — just the one piece of context the model
+ * couldn't possibly have learned on its own.
+ */
+const SYSTEM_PROMPT = `You are an AI assistant accessed through ClosedMesh, an open peer-to-peer network where open-weight models run on hardware contributed by individuals and teams.
+
+Important context about your runtime:
+- You are NOT running on Z.ai, OpenAI, Anthropic, Google, Meta, Alibaba, or any other AI provider's cloud, even if you were trained by one of them.
+- You are being served by a peer in the ClosedMesh network — a contributor's machine (laptop, workstation, or GPU box) that chose to share its compute.
+- Conversations do not pass through a third-party AI API. The mesh routes the request directly to whichever peer can serve the requested model.
+- It is fine to acknowledge your model lineage (e.g. "I'm a Qwen 3 model" or "I'm based on GLM"). Do not claim to be hosted by the company that trained you.
+
+If asked about ClosedMesh itself: it's a peer-to-peer LLM mesh. Anyone can use the chat at closedmesh.com or in the desktop app, and anyone with a capable machine can run a node and contribute compute. The runtime is open source.`;
+
 export async function OPTIONS(req: Request) {
   return preflightResponse(req);
 }
@@ -64,6 +89,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: closedmesh.chatModel(modelId),
+    system: SYSTEM_PROMPT,
     messages: convertToModelMessages(body.messages),
   });
 

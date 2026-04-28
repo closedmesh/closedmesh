@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { Logo } from "./Logo";
 
 /**
@@ -12,6 +13,7 @@ import { Logo } from "./Logo";
  */
 export function PublicHeader({
   variant = "default",
+  status,
 }: {
   /**
    * `default` — sticky, blurred-glass top bar (chat homepage, /about).
@@ -19,6 +21,12 @@ export function PublicHeader({
    * the page itself manages scroll position).
    */
   variant?: "default" | "flat";
+  /**
+   * Optional slot rendered between the brand and the nav — used by the
+   * homepage to surface a tiny live "mesh online" pill so visitors can
+   * see at a glance that the network is actually serving traffic.
+   */
+  status?: ReactNode;
 }) {
   const sticky =
     variant === "default"
@@ -38,6 +46,9 @@ export function PublicHeader({
             </div>
           </div>
         </Link>
+        {status ? (
+          <div className="hidden sm:flex">{status}</div>
+        ) : null}
         <nav className="flex items-center gap-5 text-[12px]">
           <Link
             href="/about"

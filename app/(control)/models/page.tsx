@@ -26,6 +26,16 @@ type DownloadState = {
   error?: string;
 };
 
+type StartupModel = { model: string; ctxSize?: number };
+type StartupResp =
+  | {
+      ok: true;
+      models: StartupModel[];
+      configPath: string;
+      restart?: { ok: boolean; message: string };
+    }
+  | { ok: false; message: string };
+
 const FAMILY_LABEL: Record<CatalogModel["family"], string> = {
   qwen: "Qwen",
   llama: "Llama",
@@ -49,6 +59,9 @@ export default function ModelsPage() {
   const [downloads, setDownloads] = useState<Record<string, DownloadState>>(
     {},
   );
+  const [startup, setStartup] = useState<StartupModel[]>([]);
+  const [startupBusy, setStartupBusy] = useState<string | null>(null);
+  const [startupToast, setStartupToast] = useState<string | null>(null);
 
   const refreshLocal = useCallback(async () => {
     try {
@@ -63,11 +76,79 @@ export default function ModelsPage() {
     }
   }, []);
 
+  const refreshStartup = useCallback(async () => {
+    try {
+      const res = await fetch("/api/control/models/startup", {
+        cache: "no-store",
+      });
+      const data = (await res.json()) as StartupResp;
+      if (data.ok) setStartup(data.models);
+    } catch {
+      // transient — keep last good
+    }
+  }, []);
+
   useEffect(() => {
     refreshLocal();
-    const id = setInterval(refreshLocal, 8000);
+    refreshStartup();
+    const id = setInterval(() => {
+      refreshLocal();
+      refreshStartup();
+    }, 8000);
     return () => clearInterval(id);
-  }, [refreshLocal]);
+  }, [refreshLocal, refreshStartup]);
+
+  const setStartupModel = useCallback(
+    async (id: string) => {
+      setStartupBusy(id);
+      setStartupToast(null);
+      try {
+        const res = await fetch("/api/control/models/startup", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: id }),
+        });
+        const data = (await res.json()) as StartupResp;
+        if (data.ok) {
+          setStartup(data.models);
+          setStartupToast(
+            data.restart?.message ??
+              `Saved. Restarting the runtime so ${id} loads on boot.`,
+          );
+        } else {
+          setStartupToast(data.message);
+        }
+      } catch (e) {
+        setStartupToast(e instanceof Error ? e.message : "request failed");
+      } finally {
+        setStartupBusy(null);
+      }
+    },
+    [],
+  );
+
+  const clearStartupModels = useCallback(async () => {
+    setStartupBusy("__clear");
+    setStartupToast(null);
+    try {
+      const res = await fetch("/api/control/models/startup", {
+        method: "DELETE",
+      });
+      const data = (await res.json()) as StartupResp;
+      if (data.ok) {
+        setStartup(data.models);
+        setStartupToast(
+          data.restart?.message ?? "Cleared startup models.",
+        );
+      } else {
+        setStartupToast(data.message);
+      }
+    } catch (e) {
+      setStartupToast(e instanceof Error ? e.message : "request failed");
+    } finally {
+      setStartupBusy(null);
+    }
+  }, []);
 
   const startDownload = useCallback(
     async (id: string) => {
@@ -166,6 +247,8 @@ export default function ModelsPage() {
   const localVramGb = selfNode?.capability.vramGb ?? selfNode?.vramGb ?? null;
   const localBackend = selfNode?.capability.backend ?? null;
 
+  const startupIds = new Set(startup.map((s) => s.model));
+
   return (
     <div className="flex min-h-dvh flex-col">
       <PageHeader
@@ -180,6 +263,14 @@ export default function ModelsPage() {
               {listError}
             </div>
           )}
+
+          <StartupBanner
+            startup={startup}
+            loaded={mesh.models}
+            toast={startupToast}
+            busy={startupBusy === "__clear"}
+            onClear={clearStartupModels}
+          />
 
           {mesh.models.length > 0 && (
             <Section
@@ -207,7 +298,7 @@ export default function ModelsPage() {
           {(localCatalog.length > 0 || orphans.length > 0) && (
             <Section
               title="On your mesh"
-              hint="Already downloaded — pick one to load into chat."
+              hint="Already downloaded — pick one to load on boot."
             >
               <ul className="space-y-2">
                 {localCatalog.map((m) => (
@@ -218,7 +309,10 @@ export default function ModelsPage() {
                     localVramGb={localVramGb}
                     localBackend={localBackend}
                     state="downloaded"
+                    isStartup={startupIds.has(m.id)}
+                    startupBusy={startupBusy === m.id}
                     onDownload={() => startDownload(m.id)}
+                    onSetStartup={() => setStartupModel(m.id)}
                   />
                 ))}
                 {orphans.map((m) => (
@@ -226,14 +320,32 @@ export default function ModelsPage() {
                     key={m.id}
                     className="flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--bg-elev-2)]/60 px-4 py-3"
                   >
-                    <div>
-                      <div className="font-mono text-sm">{m.id}</div>
+                    <div className="min-w-0">
+                      <div className="truncate font-mono text-sm">{m.id}</div>
                       <div className="text-[11px] text-[var(--fg-muted)]">
                         Custom model — not in our catalog.
                       </div>
                     </div>
-                    <div className="font-mono text-[11px] text-[var(--fg-muted)]">
-                      {m.sizeBytes ? formatBytes(m.sizeBytes) : "—"}
+                    <div className="ml-3 flex shrink-0 items-center gap-3">
+                      <span className="font-mono text-[11px] text-[var(--fg-muted)]">
+                        {m.sizeBytes ? formatBytes(m.sizeBytes) : "—"}
+                      </span>
+                      <button
+                        onClick={() => setStartupModel(m.id)}
+                        disabled={startupBusy !== null}
+                        className={
+                          "rounded-md border px-2.5 py-1 text-[11px] font-medium transition disabled:cursor-not-allowed disabled:opacity-40 " +
+                          (startupIds.has(m.id)
+                            ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300"
+                            : "border-[var(--border)] bg-[var(--bg-elev)] text-[var(--fg)] hover:border-[var(--accent)]/40")
+                        }
+                      >
+                        {startupIds.has(m.id)
+                          ? "Startup model"
+                          : startupBusy === m.id
+                            ? "Setting…"
+                            : "Set as startup"}
+                      </button>
                     </div>
                   </li>
                 ))}
@@ -254,7 +366,10 @@ export default function ModelsPage() {
                   localVramGb={localVramGb}
                   localBackend={localBackend}
                   state="catalog"
+                  isStartup={startupIds.has(m.id)}
+                  startupBusy={startupBusy === m.id}
                   onDownload={() => startDownload(m.id)}
+                  onSetStartup={() => setStartupModel(m.id)}
                 />
               ))}
             </ul>
@@ -287,20 +402,116 @@ function Section({
   );
 }
 
+function StartupBanner({
+  startup,
+  loaded,
+  toast,
+  busy,
+  onClear,
+}: {
+  startup: StartupModel[];
+  loaded: string[];
+  toast: string | null;
+  busy: boolean;
+  onClear: () => void;
+}) {
+  if (startup.length === 0 && loaded.length === 0 && !toast) {
+    return (
+      <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5">
+        <div className="text-[10px] uppercase tracking-[0.16em] text-amber-300">
+          No startup model
+        </div>
+        <div className="mt-1 text-sm text-[var(--fg)]">
+          Pick a downloaded model below and tap{" "}
+          <span className="font-semibold">Set as startup</span> — it will load
+          on boot and start serving the public mesh.
+        </div>
+      </div>
+    );
+  }
+
+  if (startup.length === 0) {
+    return (
+      <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-elev)] p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--fg-muted)]">
+              Startup model
+            </div>
+            <div className="mt-1 text-sm text-[var(--fg-muted)]">
+              No model is configured to load on boot. Set one below so the
+              runtime keeps serving after a restart.
+            </div>
+          </div>
+        </div>
+        {toast && (
+          <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2 text-xs text-[var(--fg-muted)]">
+            {toast}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-emerald-400/30 bg-emerald-400/5 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-emerald-300">
+            Startup model
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            {startup.map((s) => (
+              <span
+                key={s.model}
+                className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2.5 py-0.5 font-mono text-[12px] text-emerald-200"
+              >
+                {s.model}
+                {s.ctxSize ? ` · ctx ${s.ctxSize}` : ""}
+              </span>
+            ))}
+          </div>
+          <div className="mt-2 text-[12px] text-[var(--fg-muted)]">
+            Loaded automatically every time the autostart service comes up.
+          </div>
+        </div>
+        <button
+          onClick={onClear}
+          disabled={busy}
+          className="rounded-md border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-1.5 text-[11px] font-medium text-[var(--fg-muted)] transition hover:border-amber-400/40 hover:text-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {busy ? "Clearing…" : "Clear"}
+        </button>
+      </div>
+      {toast && (
+        <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2 text-xs text-[var(--fg-muted)]">
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CatalogRow({
   model,
   download,
   localVramGb,
   localBackend,
   state,
+  isStartup,
+  startupBusy,
   onDownload,
+  onSetStartup,
 }: {
   model: CatalogModel;
   download: DownloadState | null;
   localVramGb: number | null;
   localBackend: string | null;
   state: "downloaded" | "catalog";
+  isStartup: boolean;
+  startupBusy: boolean;
   onDownload: () => void;
+  onSetStartup: () => void;
 }) {
   const fits =
     localVramGb == null
@@ -337,6 +548,14 @@ function CatalogRow({
                 On your mesh
               </span>
             )}
+            {isStartup && (
+              <span
+                className="rounded-full border border-emerald-400/40 bg-emerald-400/15 px-2 py-0.5 text-[10px] font-medium text-emerald-300"
+                title="This model is loaded automatically when the runtime starts."
+              >
+                Startup model
+              </span>
+            )}
             {fits === false && state === "catalog" && (
               <span
                 className="rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium text-amber-300"
@@ -367,11 +586,24 @@ function CatalogRow({
           </div>
         </div>
 
-        <div className="shrink-0">
+        <div className="flex shrink-0 flex-col items-end gap-2">
           {state === "downloaded" ? (
-            <span className="rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-1.5 text-[11px] font-medium text-[var(--fg-muted)]">
-              Ready
-            </span>
+            <button
+              onClick={onSetStartup}
+              disabled={startupBusy || isStartup}
+              className={
+                "rounded-lg px-4 py-2 text-xs font-semibold transition disabled:cursor-not-allowed " +
+                (isStartup
+                  ? "border border-emerald-400/40 bg-emerald-400/10 text-emerald-300"
+                  : "bg-[var(--accent)] text-black shadow-[0_8px_24px_-12px_rgba(255,122,69,0.7)] hover:brightness-110 disabled:opacity-40 disabled:shadow-none")
+              }
+            >
+              {isStartup
+                ? "Startup model"
+                : startupBusy
+                  ? "Setting…"
+                  : "Set as startup"}
+            </button>
           ) : (
             <button
               onClick={onDownload}

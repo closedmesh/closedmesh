@@ -5,7 +5,7 @@ import { Logo } from "../../components/Logo";
 export const metadata: Metadata = {
   title: "How ClosedMesh works",
   description:
-    "ClosedMesh is a private LLM for teams. The chat UI runs in your browser, inference runs on machines you own. Built on ClosedMesh LLM, an open-source peer-to-peer inference runtime.",
+    "Your private LLM. Open-weight models served by a peer-to-peer mesh of contributed compute. No third-party API in the middle.",
 };
 
 export default function AboutPage() {
@@ -51,14 +51,14 @@ export default function AboutPage() {
             </div>
             <div className="max-w-3xl">
               <h1 className="text-balance text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl">
-                An open LLM mesh, served by people who lend their compute.
+                Your private LLM.
               </h1>
               <p className="mt-5 max-w-2xl text-pretty text-base leading-relaxed text-[var(--fg-muted)] sm:text-lg">
-                ClosedMesh is a peer-to-peer inference network. Anyone can
-                use the chat — at closedmesh.com or in the desktop app —
-                without running anything themselves. Anyone with a capable
-                machine can join the mesh and contribute compute. No
-                third-party API behind the chat, no vendor in the loop.
+                A peer-to-peer mesh running open-weight models on machines
+                contributed by people who chose to share them. Use the chat
+                from anywhere — closedmesh.com or the desktop app, no
+                install required. Run a node from any capable machine and
+                add capacity to the mesh. No third-party API in the middle.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3 text-[12px]">
@@ -188,8 +188,8 @@ export default function AboutPage() {
 
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             <Feature
-              title="No paywall"
-              body="The chat is free to use. Inference is served by peers who chose to contribute compute, not by a third-party API behind a meter."
+              title="No third-party AI provider"
+              body="Prompts go to a peer running an open-weight model on hardware that someone in the mesh owns. No OpenAI, Anthropic or Google in the loop — nothing to revoke, no provider terms to read."
             />
             <Feature
               title="Heterogeneous hardware"
