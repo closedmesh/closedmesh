@@ -5,7 +5,7 @@ import { Logo } from "../../components/Logo";
 export const metadata: Metadata = {
   title: "How ClosedMesh works",
   description:
-    "Your private LLM. Open-weight models served by a peer-to-peer mesh of contributed compute. No third-party API in the middle.",
+    "Your private LLM, on hardware people own. A peer-to-peer mesh of contributed machines serving open-weight models. No third-party API in the middle.",
 };
 
 export default function AboutPage() {
@@ -52,13 +52,16 @@ export default function AboutPage() {
             <div className="max-w-3xl">
               <h1 className="text-balance text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl">
                 Your private LLM.
+                <span className="block text-[var(--fg-muted)]">
+                  On hardware people own.
+                </span>
               </h1>
               <p className="mt-5 max-w-2xl text-pretty text-base leading-relaxed text-[var(--fg-muted)] sm:text-lg">
-                A peer-to-peer mesh running open-weight models on machines
-                contributed by people who chose to share them. Use the chat
-                from anywhere — closedmesh.com or the desktop app, no
-                install required. Run a node from any capable machine and
-                add capacity to the mesh. No third-party API in the middle.
+                A peer-to-peer mesh of contributed machines, running
+                open-weight models. Use the chat from anywhere —
+                closedmesh.com or the desktop app, no install required.
+                Run a node from any capable machine and add capacity to the
+                mesh. No third-party API in the middle.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3 text-[12px]">

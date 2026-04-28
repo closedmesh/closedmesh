@@ -5,9 +5,9 @@ import { MeshLiveStatus } from "../components/MeshLiveStatus";
 import { PublicHeader } from "../components/PublicHeader";
 
 export const metadata: Metadata = {
-  title: "ClosedMesh — your private LLM",
+  title: "ClosedMesh — your private LLM, on hardware people own",
   description:
-    "Open-weight models, served by a peer-to-peer mesh of contributed compute. No third-party API in the middle. Use the chat or run a node.",
+    "A peer-to-peer mesh of contributed machines, running open-weight models. No third-party API in the middle. Use the chat or run a node.",
 };
 
 /**
@@ -66,10 +66,13 @@ function HomepageIntro() {
         </div>
         <h1 className="mt-3 text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
           Your private LLM.
+          <span className="block text-[var(--fg-muted)]">
+            On hardware people own.
+          </span>
         </h1>
         <p className="mx-auto mt-4 max-w-md text-pretty text-[15px] leading-relaxed text-[var(--fg-muted)]">
-          Open-weight models, served by a peer-to-peer mesh of contributed
-          compute. No third-party API in the middle.
+          A peer-to-peer mesh of contributed machines, running open-weight
+          models. No third-party API in the middle.
         </p>
         <div className="mt-5 flex justify-center">
           <MeshLiveStatus />
