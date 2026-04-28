@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::menu::{Menu, MenuBuilder, MenuEvent, MenuItem, MenuItemBuilder, PredefinedMenuItem};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 use crate::mesh::MeshStatus;
@@ -176,6 +176,18 @@ fn main() {
 fn build_tray(app: &tauri::App, state: Arc<AppState>) -> tauri::Result<()> {
     let menu = build_tray_menu(app, &state.last_status.lock().unwrap())?;
 
+    // macOS NSStatusItem-style menu: left-click *and* right-click both
+    // open the menu, and the menu's mouse tracker handles hover.
+    //
+    // The previous build used `show_menu_on_left_click(false)` plus a
+    // manual `on_tray_icon_event` handler that called `window.show()`
+    // on left-click — Slack-style. That works on Linux/Windows but
+    // fights AppKit on macOS: the manual click swallows the event the
+    // menu tracker needs to keep itself open while the user moves the
+    // cursor onto an item, so the menu closes on hover. We let the
+    // standard tracker drive on every platform now, and put "Show
+    // ClosedMesh" as the first menu item with a global Cmd+O shortcut
+    // so the click-to-open habit still works in two clicks.
     let tray = TrayIconBuilder::with_id("closedmesh-tray")
         .icon(
             app.default_window_icon()
@@ -185,24 +197,8 @@ fn build_tray(app: &tauri::App, state: Arc<AppState>) -> tauri::Result<()> {
         .icon_as_template(true)
         .tooltip("ClosedMesh — offline")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        .show_menu_on_left_click(true)
         .on_menu_event(handle_menu_event)
-        .on_tray_icon_event(|_tray, event| {
-            // Click-to-toggle the chat window. macOS behaviour matches the
-            // Swift app; on Windows / Linux it's a familiar pattern from
-            // Slack / Discord-style tray apps.
-            if let TrayIconEvent::Click {
-                button: tauri::tray::MouseButton::Left,
-                button_state: tauri::tray::MouseButtonState::Up,
-                ..
-            } = event
-            {
-                if let Some(app) = _tray.app_handle().get_webview_window(MAIN_WINDOW) {
-                    let _ = app.show();
-                    let _ = app.set_focus();
-                }
-            }
-        })
         .build(app)?;
 
     // Stash the tray on app state so the poller can update its menu/tooltip

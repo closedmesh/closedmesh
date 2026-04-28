@@ -121,6 +121,11 @@ export default function DashboardPage() {
   const [quickStart, setQuickStart] = useState<QuickStartPhase>({ kind: "idle" });
   const [update, setUpdate] = useState<UpdateCheckResp | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState<boolean>(false);
+  // Track loaded models from the previous status poll so we can surface
+  // a one-shot "Ready" card the moment a model transitions from
+  // "configured but loading" to "actually serving".
+  const [readyCardModelId, setReadyCardModelId] = useState<string | null>(null);
+  const prevLoadedHere = useRef<string[]>([]);
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -481,6 +486,20 @@ export default function DashboardPage() {
   const selfBackend = selfNode?.capability.backend ?? "cpu";
   const loadedHere = selfNode?.capability.loadedModels ?? [];
   const startupConfigured = (startup ?? []).length > 0;
+
+  // Detect "model just transitioned from not-loaded to loaded" and pop
+  // the success card. Auto-clears after 12s — long enough to read,
+  // short enough to not stick around forever once the user has seen it.
+  useEffect(() => {
+    const prev = prevLoadedHere.current;
+    const newlyLoaded = loadedHere.find((m) => !prev.includes(m));
+    prevLoadedHere.current = loadedHere;
+    if (newlyLoaded && prev.length === 0) {
+      setReadyCardModelId(newlyLoaded);
+      const t = setTimeout(() => setReadyCardModelId(null), 12_000);
+      return () => clearTimeout(t);
+    }
+  }, [loadedHere]);
   const localModelIds = new Set((localModels ?? []).map((m) => m.id));
   const recommendation = pickRecommendedModel(selfVram, selfBackend);
   const alreadyDownloaded = recommendation
@@ -562,6 +581,13 @@ export default function DashboardPage() {
           {!showQuickStart && startupConfigured && loadedHere.length === 0 && (
             <ModelLoadingCard
               startupModelId={startup?.[0]?.model ?? "unknown"}
+            />
+          )}
+
+          {readyCardModelId && (
+            <ModelReadyCard
+              modelId={readyCardModelId}
+              onDismiss={() => setReadyCardModelId(null)}
             />
           )}
 
@@ -1057,25 +1083,174 @@ function QuickStartCard({
   );
 }
 
+/**
+ * Loading-state card shown between "user picked a model" and "runtime is
+ * actually serving it". Starts a local timer the moment we render so
+ * the user has *some* feedback that we're not just frozen — the worst
+ * UX failure here is staring at "Running, but no model loaded yet" for
+ * 90 seconds with nothing changing on the page.
+ *
+ * Copy progresses with elapsed time so a 2-minute load on a heavy 8B
+ * model doesn't look identical to a 5-second load on a 0.4B smoke test.
+ */
 function ModelLoadingCard({ startupModelId }: { startupModelId: string }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const start = Date.now();
+    const id = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - start) / 1000));
+    }, 500);
+    return () => clearInterval(id);
+  }, [startupModelId]);
+
+  let phaseLabel: string;
+  let hint: string;
+  if (elapsed < 8) {
+    phaseLabel = "Restarting the runtime…";
+    hint = "Bouncing the launchd unit so it picks up the new config.";
+  } else if (elapsed < 30) {
+    phaseLabel = "Reading model weights from disk…";
+    hint = "Mapping the GGUF file. Bigger models take a moment.";
+  } else if (elapsed < 75) {
+    phaseLabel = "Loading into memory…";
+    hint = "Almost done. The runtime registers with the mesh once weights are in.";
+  } else if (elapsed < 150) {
+    phaseLabel = "Larger models can take a couple of minutes…";
+    hint = "Cold loads off a slow SSD or with high context size run long.";
+  } else {
+    phaseLabel = "This is taking longer than usual.";
+    hint =
+      "Something might be wrong. Open Activity for the runtime log, or stop & try a smaller model.";
+  }
+
+  const stuck = elapsed >= 150;
+
   return (
-    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-elev)] p-5">
-      <div className="flex items-center gap-3">
-        <span
-          aria-hidden
-          className="inline-block h-2 w-2 animate-pulse rounded-full bg-[var(--accent)]"
-        />
-        <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--accent)]">
-            Loading model
+    <section
+      className={
+        "relative overflow-hidden rounded-2xl border p-5 " +
+        (stuck
+          ? "border-amber-400/40 bg-amber-400/5"
+          : "border-[var(--accent)]/30 bg-[var(--bg-elev)]")
+      }
+    >
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background: stuck
+            ? "radial-gradient(60% 100% at 0% 0%, rgba(251,191,36,0.10), transparent 70%)"
+            : "radial-gradient(60% 100% at 0% 0%, rgba(255,122,69,0.10), transparent 70%)",
+        }}
+      />
+      <div className="relative flex flex-wrap items-start justify-between gap-4">
+        <div className="flex min-w-0 max-w-2xl items-start gap-3">
+          <span
+            aria-hidden
+            className={
+              "mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full " +
+              (stuck
+                ? "bg-amber-300"
+                : "bg-[var(--accent)] shadow-[0_0_14px_rgba(255,122,69,0.7)]")
+            }
+          >
+            {!stuck && (
+              <span className="absolute h-2.5 w-2.5 animate-ping rounded-full bg-[var(--accent)]/50" />
+            )}
+          </span>
+          <div className="min-w-0">
+            <div
+              className={
+                "text-[10px] uppercase tracking-[0.18em] " +
+                (stuck ? "text-amber-300" : "text-[var(--accent)]")
+              }
+            >
+              Loading model · {formatElapsed(elapsed)}
+            </div>
+            <div className="mt-0.5 truncate font-mono text-sm text-[var(--fg)]">
+              {startupModelId}
+            </div>
+            <div className="mt-1 text-[13px] text-[var(--fg)]">
+              {phaseLabel}
+            </div>
+            <div className="mt-0.5 text-[11px] text-[var(--fg-muted)]">
+              {hint}
+            </div>
           </div>
-          <div className="mt-0.5 truncate font-mono text-sm text-[var(--fg)]">
-            {startupModelId}
+        </div>
+        <Link
+          href="/logs"
+          className="shrink-0 rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2 text-[11px] font-medium text-[var(--fg-muted)] transition hover:text-[var(--fg)]"
+        >
+          Open Activity →
+        </Link>
+      </div>
+    </section>
+  );
+}
+
+function formatElapsed(s: number): string {
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r === 0 ? `${m}m` : `${m}m ${r}s`;
+}
+
+/**
+ * Small "your model just came up" success card. Shown briefly after a
+ * Quick start completes and the polled status confirms the runtime is
+ * actually serving the model. The card is auto-dismissed via state in
+ * the parent — this component just renders it.
+ */
+function ModelReadyCard({
+  modelId,
+  onDismiss,
+}: {
+  modelId: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <section className="relative overflow-hidden rounded-2xl border border-emerald-400/40 bg-emerald-400/5 p-5">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(60% 100% at 0% 0%, rgba(52,211,153,0.10), transparent 70%)",
+        }}
+      />
+      <div className="relative flex flex-wrap items-start justify-between gap-4">
+        <div className="flex min-w-0 max-w-2xl items-start gap-3">
+          <span
+            aria-hidden
+            className="mt-1 inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-400 shadow-[0_0_14px_rgba(52,211,153,0.7)]"
+          />
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-emerald-300">
+              Ready
+            </div>
+            <div className="mt-0.5 truncate font-mono text-sm text-[var(--fg)]">
+              {modelId}
+            </div>
+            <div className="mt-1 text-[12px] text-[var(--fg-muted)]">
+              The runtime is serving this model. You&apos;re sharing with the mesh.
+            </div>
           </div>
-          <div className="mt-1 text-[11px] text-[var(--fg-muted)]">
-            The runtime is restarting with this model. Usually under a minute on
-            local SSDs.
-          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Link
+            href="/chat"
+            className="rounded-lg bg-[var(--accent)] px-4 py-2 text-xs font-semibold text-black shadow-[0_8px_24px_-12px_rgba(255,122,69,0.7)] transition hover:brightness-110"
+          >
+            Open chat
+          </Link>
+          <button
+            onClick={onDismiss}
+            className="rounded-lg px-2 py-2 text-xs text-[var(--fg-muted)] transition hover:text-[var(--fg)]"
+            title="Hide this card"
+          >
+            Dismiss
+          </button>
         </div>
       </div>
     </section>

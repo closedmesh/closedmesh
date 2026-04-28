@@ -155,12 +155,15 @@ export async function DELETE() {
 
 /**
  * Stop and re-start the autostart unit so the runtime re-reads
- * config.toml. Best-effort — if the service isn't installed (e.g. user
- * runs the binary by hand) we still return a useful message.
+ * config.toml. Self-heals: if `service start` fails because the
+ * launchd / systemd / scheduled task hasn't been installed yet (which
+ * happens when the user unticked "Start automatically when I log in"
+ * during first-run setup), we install it and try again before giving
+ * up.
  *
  * The restart takes a few seconds because the runtime reloads weights
  * into memory. We return immediately after the service-start command
- * exits; the caller can poll /api/control/status to watch the model
+ * exits; the caller polls /api/control/status to watch the model
  * actually come up.
  */
 async function bounceService(): Promise<{ ok: boolean; message: string }> {
@@ -173,8 +176,8 @@ async function bounceService(): Promise<{ ok: boolean; message: string }> {
     };
   }
 
-  // `service stop` exits non-zero if the unit was already stopped, which
-  // is fine. We treat both stop outcomes as "ok to start now".
+  // `service stop` exits non-zero if the unit was already stopped or
+  // never installed, which is fine. We treat both as "ok to start now".
   await runClosedmesh(bin, ["service", "stop"], 10_000);
   const start = await runClosedmesh(bin, ["service", "start"], 15_000);
   if (start.ok) {
@@ -184,6 +187,42 @@ async function bounceService(): Promise<{ ok: boolean; message: string }> {
         "Saved. Restarting the runtime — your model will be available in a few seconds.",
     };
   }
+
+  // The most common failure here on a fresh install is "service not
+  // installed" — the launchd plist / systemd unit doesn't exist yet
+  // because the user opted out of autostart. Install it and retry
+  // once. We don't loop on the second failure; if `service install`
+  // itself broke we want the surface error rather than a generic
+  // "couldn't start".
+  const looksMissing = looksLikeServiceMissing(start.stderr, start.stdout);
+  if (looksMissing) {
+    const install = await runClosedmesh(bin, ["service", "install"], 20_000);
+    if (install.ok) {
+      const retry = await runClosedmesh(bin, ["service", "start"], 15_000);
+      if (retry.ok) {
+        return {
+          ok: true,
+          message:
+            "Installed the autostart service and started it — your model will be available in a few seconds.",
+        };
+      }
+      return {
+        ok: false,
+        message:
+          retry.stderr ||
+          retry.stdout ||
+          "Installed the service but it didn't start. See Activity for details.",
+      };
+    }
+    return {
+      ok: false,
+      message:
+        install.stderr ||
+        install.stdout ||
+        "Couldn't install the autostart service. Try `closedmesh service install` from a terminal.",
+    };
+  }
+
   return {
     ok: false,
     message:
@@ -191,6 +230,26 @@ async function bounceService(): Promise<{ ok: boolean; message: string }> {
       start.stdout ||
       "Saved config, but the autostart service didn't restart cleanly. Try `closedmesh service start` from a terminal.",
   };
+}
+
+/**
+ * Heuristic match for "service not installed" across the three
+ * platforms' tooling. We match on substrings rather than an exact
+ * message because the runtime CLI's wording has changed across
+ * versions and we'd rather over-trigger the auto-install fallback
+ * than under-trigger.
+ */
+function looksLikeServiceMissing(stderr: string, stdout: string): boolean {
+  const blob = `${stderr}\n${stdout}`.toLowerCase();
+  return (
+    blob.includes("not installed") ||
+    blob.includes("no such service") ||
+    blob.includes("could not find") ||
+    blob.includes("unit not found") ||
+    blob.includes("service was not installed") ||
+    blob.includes("not loaded") ||
+    blob.includes("unable to start")
+  );
 }
 
 function forbiddenOnPublic() {
