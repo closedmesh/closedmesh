@@ -188,8 +188,30 @@ pub fn fetch_status() -> MeshStatus {
 /// Best-effort `closedmesh service start` on launch. Silently no-ops if
 /// the CLI isn't installed yet — the user just gets the offline empty
 /// state (handled by the chat UI) until they install it.
+///
+/// On macOS, before starting the service, we also self-heal the launchd
+/// agent's plist. There are two failure modes we observed in the wild:
+///
+///   1. The user installed the CLI a long time ago (pre-`--auto`/`--join-url`
+///      plumbing), so the plist runs `closedmesh serve --headless` with no
+///      mesh-discovery flags and the node lives in its own private mesh.
+///   2. The user has a current `install.sh`-written plist that uses the new
+///      `--join-url https://mesh.closedmesh.com/api/status` flag, but their
+///      installed CLI binary predates the flag (e.g. they upgraded the .app
+///      without re-running the installer, or they're running a release that
+///      shipped before the flag landed). Their service crashes on launch
+///      with `error: unexpected argument '--join-url'`.
+///
+/// Both paths leave `closedmesh.com` showing "0 models" while the user's Mac
+/// is in fact running a model — just on the wrong mesh. The fix is to write
+/// a plist with arguments the *installed binary* actually understands, and
+/// to re-bootstrap the launchd agent. We do this on every launch so users
+/// always get the canonical mesh without ever running a terminal command.
 pub fn start_service_if_installed() {
-    if locate_binary().is_some() {
+    if let Some(bin) = locate_binary() {
+        #[cfg(target_os = "macos")]
+        repair_launchd_plist(&bin);
+        let _ = bin;
         start_service();
     }
 }
@@ -200,6 +222,215 @@ pub fn start_service() {
 
 pub fn stop_service() {
     run_cli(&["service", "stop"]);
+}
+
+// ---------- Launchd self-healing (macOS) --------------------------------
+
+#[cfg(target_os = "macos")]
+const SERVICE_LABEL: &str = "dev.closedmesh.closedmesh";
+
+#[cfg(target_os = "macos")]
+const ENTRY_STATUS_URL: &str = "https://mesh.closedmesh.com/api/status";
+
+/// Rewrites `~/Library/LaunchAgents/dev.closedmesh.closedmesh.plist` so the
+/// service uses arguments compatible with the installed `closedmesh` binary,
+/// then bounces the launchd agent. A no-op if we can't locate `$HOME` or if
+/// rewriting fails; the user falls back to whatever plist they had, which
+/// is no worse than today.
+#[cfg(target_os = "macos")]
+fn repair_launchd_plist(bin: &std::path::Path) {
+    let Some(plist_path) = launchd_plist_path() else { return };
+
+    let supports_join_url = cli_supports_join_url(bin);
+    let join_args: Vec<String> = if supports_join_url {
+        vec![
+            "--join-url".to_string(),
+            ENTRY_STATUS_URL.to_string(),
+        ]
+    } else {
+        match fetch_entry_token() {
+            Some(token) => vec!["--join".to_string(), token],
+            // Couldn't reach the entry node and the binary doesn't support
+            // --join-url; we can still write a plist that auto-discovers
+            // via Nostr. Worse than joining the canonical mesh directly,
+            // but better than leaving a broken `--join-url` arg in place.
+            None => Vec::new(),
+        }
+    };
+
+    let xml = build_launchd_plist_xml(bin, &join_args);
+
+    // Atomic rewrite: write to a sibling tmp file and rename. Avoids a
+    // half-written plist if the desktop app is killed mid-write.
+    let tmp_path = plist_path.with_extension("plist.tmp");
+    if let Some(parent) = plist_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if std::fs::write(&tmp_path, xml.as_bytes()).is_err() {
+        return;
+    }
+    if std::fs::rename(&tmp_path, &plist_path).is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return;
+    }
+
+    bounce_launchd_agent(&plist_path);
+}
+
+#[cfg(target_os = "macos")]
+fn launchd_plist_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| {
+        h.join("Library")
+            .join("LaunchAgents")
+            .join(format!("{SERVICE_LABEL}.plist"))
+    })
+}
+
+/// Probes `closedmesh serve --help` for the `--join-url` token. Cheap (a
+/// fork+exec of our own binary printing static help text) and avoids
+/// hard-coding a CLI version the desktop has to keep in sync with.
+#[cfg(target_os = "macos")]
+fn cli_supports_join_url(bin: &std::path::Path) -> bool {
+    let Ok(output) = Command::new(bin).args(["serve", "--help"]).output() else {
+        return false;
+    };
+    let combined: Vec<u8> = output
+        .stdout
+        .into_iter()
+        .chain(output.stderr.into_iter())
+        .collect();
+    String::from_utf8_lossy(&combined).contains("--join-url")
+}
+
+/// One-shot HTTPS GET to the canonical entry node's status endpoint.
+/// We deliberately use short timeouts: the desktop is on the launch path
+/// and we'd rather start with auto-discovery only than block the GUI for
+/// 30s if the user's offline.
+#[cfg(target_os = "macos")]
+fn fetch_entry_token() -> Option<String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(2))
+        .timeout_read(Duration::from_secs(4))
+        .build();
+    let payload: InvitePayload = agent
+        .get(ENTRY_STATUS_URL)
+        .call()
+        .ok()?
+        .into_json()
+        .ok()?;
+    payload
+        .token
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// Mirrors the plist `install.sh` writes today, but with the
+/// `ProgramArguments` array constructed from `join_args` so the same
+/// codepath handles `--join-url`, `--join <token>`, or no join flag at
+/// all (Nostr-only fallback).
+#[cfg(target_os = "macos")]
+fn build_launchd_plist_xml(bin: &std::path::Path, join_args: &[String]) -> String {
+    let home = dirs::home_dir()
+        .map(|h| h.display().to_string())
+        .unwrap_or_else(|| "/".to_string());
+    let log_dir = format!("{home}/Library/Logs/closedmesh");
+
+    let mut program_args = vec![
+        bin.display().to_string(),
+        "serve".to_string(),
+        "--auto".to_string(),
+        "--mesh-name".to_string(),
+        "closedmesh".to_string(),
+    ];
+    program_args.extend(join_args.iter().cloned());
+    program_args.push("--headless".to_string());
+
+    let args_xml = program_args
+        .iter()
+        .map(|a| format!("        <string>{}</string>", xml_escape(a)))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+{args}
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{home}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>{log_dir}/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{log_dir}/stderr.log</string>
+</dict>
+</plist>
+"#,
+        label = SERVICE_LABEL,
+        args = args_xml,
+        home = xml_escape(&home),
+        log_dir = xml_escape(&log_dir),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// `launchctl bootout` (idempotent — succeeds whether or not the agent is
+/// loaded) followed by `launchctl bootstrap` to pick up the rewritten
+/// plist. We swallow errors: the worst case is the next `closedmesh
+/// service start` call below picks it up, or the service stays on its
+/// previous args until the next launch.
+#[cfg(target_os = "macos")]
+fn bounce_launchd_agent(plist_path: &std::path::Path) {
+    let uid = current_uid();
+    let target = format!("gui/{uid}");
+    let label_target = format!("{target}/{SERVICE_LABEL}");
+
+    let _ = Command::new("launchctl")
+        .args(["bootout", &label_target])
+        .output();
+
+    let plist_str = plist_path.display().to_string();
+    let _ = Command::new("launchctl")
+        .args(["bootstrap", &target, &plist_str])
+        .output();
+}
+
+#[cfg(target_os = "macos")]
+fn current_uid() -> u32 {
+    // `id -u` is a 1-process fork that prints the numeric UID. We avoid
+    // adding a libc dep just for `getuid()` — this codepath runs once at
+    // launch and the cost is negligible.
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8(o.stdout)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+        })
+        .unwrap_or(501)
 }
 
 /// Reads the `keepMeshRunningAfterQuit` toggle from the controller's
