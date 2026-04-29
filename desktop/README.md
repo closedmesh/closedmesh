@@ -18,8 +18,9 @@ PowerShell one-liners in the root README. The desktop app gives the user:
   endpoint at `http://127.0.0.1:3131/api/status`.
 - Tray menu actions: **Open Chat**, **Reload**, **Open Admin Console**,
   **Start / Stop ClosedMesh Service** (shells out to `closedmesh service
-  start|stop`), **Copy Invite Token** (runs `closedmesh invite create` and
-  copies the token to the system clipboard), **Show Logs in File Manager**.
+  start|stop`), **Copy Invite Token** (reads the local node's join token
+  from `http://127.0.0.1:3131/api/status` and copies it to the system
+  clipboard), **Show Logs in File Manager**.
 - A WKWebView / WebView2 / WebKitGTK that loads `http://localhost:3000`
   if the local Next.js controller is up, falling back to
   `https://closedmesh.com` otherwise.

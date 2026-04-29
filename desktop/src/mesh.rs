@@ -8,9 +8,21 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+#[derive(Debug, Deserialize, Default)]
+struct InvitePayload {
+    #[serde(default)]
+    token: Option<String>,
+}
+
 /// Snapshot of the local mesh state, polled from `127.0.0.1:3131/api/status`
 /// every few seconds and rendered into the tray tooltip + title.
-#[derive(Debug, Clone, Default)]
+///
+/// `PartialEq` is load-bearing: the tray applies a fresh status to the
+/// `NSStatusItem`'s menu only when something actually changed. Replacing
+/// the menu mid-track on macOS dismisses an open menu (AppKit drops the
+/// `NSMenuTracking` when the menu pointer flips), so blind 5-second
+/// rebuilds make the menu look like it "closes on hover".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MeshStatus {
     pub online: bool,
     pub node_count: usize,
@@ -64,7 +76,8 @@ const REMOTE_CHAT_URL: &str = "https://closedmesh.com";
 ///   2. `http://127.0.0.1:<sidecar_port>` if the bundled Next.js
 ///      controller spawned successfully (the common case)
 ///   3. `http://localhost:3000` if a user-installed launchd controller
-///      is still around from before the sidecar (legacy install)
+///      is still around from before the sidecar (legacy install) AND it
+///      positively identifies as a closedmesh controller
 ///   4. `https://closedmesh.com` as a marketing/install fallback
 pub fn preferred_url() -> String {
     if let Ok(u) = std::env::var("CLOSEDMESH_APP_URL") {
@@ -81,17 +94,31 @@ pub fn preferred_url() -> String {
     REMOTE_CHAT_URL.to_string()
 }
 
-/// Synchronous TCP connect probe — cheaper than a full HTTP request, and
-/// "is anything listening on :3000?" is exactly the question we want
-/// answered. 250ms is small enough to be invisible at launch but big
-/// enough to catch a Next.js process that just spun up.
+/// Header the closedmesh controller stamps onto `/api/control/status`
+/// responses. The desktop shell looks for it before trusting whatever's on
+/// `:3000` to be ours — without the marker we'd happily load an unrelated
+/// Next.js / Vite / static server the user happens to be running on the
+/// same port into the WebView, which is a confusing failure that's worse
+/// than just falling through to closedmesh.com.
+const CONTROLLER_HEADER: &str = "x-closedmesh-controller";
+
+/// HTTP probe of `:3000` that *positively* confirms it's the closedmesh
+/// controller, not just any server willing to accept a TCP connection.
+/// We deliberately don't fall back to a bare TCP probe — a "yes it answered"
+/// from someone else's Next.js dev server is exactly the failure we're
+/// trying to avoid here.
 fn legacy_controller_up() -> bool {
-    use std::net::TcpStream;
-    let addr = match "127.0.0.1:3000".parse() {
-        Ok(a) => a,
-        Err(_) => return false,
-    };
-    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_millis(250))
+        .timeout_read(Duration::from_millis(750))
+        .build();
+    match agent
+        .get("http://127.0.0.1:3000/api/control/status")
+        .call()
+    {
+        Ok(resp) => resp.header(CONTROLLER_HEADER).is_some(),
+        Err(_) => false,
+    }
 }
 
 /// Where the controller writes stdout/stderr logs. Used by `Sidecar` to
@@ -175,24 +202,22 @@ pub fn stop_service() {
     run_cli(&["service", "stop"]);
 }
 
-/// Runs `closedmesh invite create` and returns the printed token.
-///
-/// The CLI prints the token plus some human-readable framing; we return
-/// the longest "tokeny" line (no whitespace, ≥16 chars). Same heuristic
-/// as the deprecated Swift implementation; resilient to copy changes.
+/// Returns the local node's join token — the value a teammate pastes on
+/// their machine to join this mesh. The runtime mints the token at startup
+/// and publishes it on the admin status endpoint; there is intentionally no
+/// `closedmesh invite create` CLI subcommand because the token is just an
+/// addressable identity for the local node, regenerated each time the
+/// service starts. Same value the CLI consumes via `--join <token>`.
 pub fn create_invite() -> Option<String> {
-    let bin = locate_binary()?;
-    let output = Command::new(bin).args(["invite", "create"]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.contains(char::is_whitespace) && line.len() >= 16)
-        .max_by_key(|line| line.len())
-        .map(str::to_string)
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_millis(800))
+        .timeout_read(Duration::from_millis(1500))
+        .build();
+    let payload: InvitePayload = agent.get(ADMIN_STATUS_URL).call().ok()?.into_json().ok()?;
+    payload
+        .token
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
 }
 
 /// Returns a path to reveal in the OS file browser when the user picks
