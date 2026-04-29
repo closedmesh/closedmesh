@@ -500,6 +500,16 @@ export default function DashboardPage() {
       return () => clearTimeout(t);
     }
   }, [loadedHere]);
+
+  // Drop the "ready" success banner the instant the service goes away.
+  // Otherwise a user who hits Stop sharing within 12s of a model coming
+  // up sees a green "serving this model" card co-existing with the
+  // "Not running" status above it — confusing on its own, and worse when
+  // paired with a freshly-mounted ModelLoadingCard. Same for the
+  // transient "unknown" state during a service bounce.
+  useEffect(() => {
+    if (!running) setReadyCardModelId(null);
+  }, [running]);
   const localModelIds = new Set((localModels ?? []).map((m) => m.id));
   const recommendation = pickRecommendedModel(selfVram, selfBackend);
   const alreadyDownloaded = recommendation
@@ -578,11 +588,14 @@ export default function DashboardPage() {
             />
           )}
 
-          {!showQuickStart && startupConfigured && loadedHere.length === 0 && (
-            <ModelLoadingCard
-              startupModelId={startup?.[0]?.model ?? "unknown"}
-            />
-          )}
+          {!showQuickStart &&
+            running &&
+            startupConfigured &&
+            loadedHere.length === 0 && (
+              <ModelLoadingCard
+                startupModelId={startup?.[0]?.model ?? "unknown"}
+              />
+            )}
 
           {readyCardModelId && (
             <ModelReadyCard
