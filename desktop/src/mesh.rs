@@ -352,6 +352,22 @@ const SERVICE_LABEL: &str = "dev.closedmesh.closedmesh";
 #[cfg(target_os = "macos")]
 const ENTRY_STATUS_URL: &str = "https://mesh.closedmesh.com/api/status";
 
+/// Fallback join token baked in at build time.
+///
+/// The canonical entry node (mesh.closedmesh.com) runs in Docker on AWS
+/// Lightsail with a persistent volume that preserves its Iroh identity. Its
+/// node ID — and therefore its Iroh ticket — is stable across container
+/// restarts. We bake the current token here so that users who can't reach
+/// mesh.closedmesh.com (captive portal, restrictive firewall, DNS failure,
+/// offline cold start) still get `--join` injected and can connect via the
+/// relay leg of the ticket. If the live fetch succeeds it always wins
+/// (fresher addresses); the fallback is only used when the HTTP call fails.
+///
+/// Update this constant whenever the entry node's identity changes (i.e. the
+/// Lightsail instance or Docker volume is rebuilt from scratch).
+#[cfg(target_os = "macos")]
+const FALLBACK_JOIN_TOKEN: &str = "eyJpZCI6IjczNGVkYjJhMWRhMjQ0OWMyZWIyNGQyMzBjNDZkMDE0YTRkOWY2MmVmY2JkYjJlYmRmNzlmM2NiMGMyNzFhZmUiLCJhZGRycyI6W3siUmVsYXkiOiJodHRwczovL3VzZTEtMS5yZWxheS5uMC5pcm9oLWNhbmFyeS5pcm9oLmxpbmsuLyJ9LHsiSXAiOiIzLjIxMC4zMC41ODo1MTgyMCJ9LHsiSXAiOiIxNzIuMTcuMC4xOjUxODIwIn0seyJJcCI6IjE3Mi4yNi4zLjkxOjUxODIwIn0seyJJcCI6IlsyNjAwOjFmMTg6NTI2Zjo0OTAwOjY4NjU6YzY4NzoxYTc0OjRiOWJdOjU2NDA0In1dfQ";
+
 /// Public Iroh relays we explicitly hand to the runtime via `--relay`.
 ///
 /// closedmesh-llm v0.65.0-rc2 (the latest published release at the time
@@ -397,24 +413,14 @@ fn repair_launchd_plist(bin: &std::path::Path) {
     };
 
     let supports_join_url = cli_supports_join_url(bin);
-    let mut fetch_failed = false;
     let join_args: Vec<String> = if supports_join_url {
         vec!["--join-url".to_string(), ENTRY_STATUS_URL.to_string()]
     } else {
-        match fetch_entry_token() {
-            Some(token) => vec!["--join".to_string(), token],
-            None => {
-                // Visible in `~/Library/Logs/closedmesh/stderr.log` — gives
-                // us *some* signal next time we have to debug a broken
-                // self-heal in the field.
-                eprintln!(
-                    "[closedmesh] self-heal: entry token fetch from {ENTRY_STATUS_URL} \
-                     returned no token; falling back to Nostr auto-discovery"
-                );
-                fetch_failed = true;
-                Vec::new()
-            }
-        }
+        // fetch_entry_token always returns a token — either live from
+        // mesh.closedmesh.com or the built-in fallback. Either way we
+        // always get --join in the plist.
+        let token = fetch_entry_token();
+        vec!["--join".to_string(), token]
     };
 
     let xml = build_launchd_plist_xml(bin, &join_args);
@@ -427,26 +433,6 @@ fn repair_launchd_plist(bin: &std::path::Path) {
     if let Some(bytes) = &existing {
         if bytes == xml.as_bytes() {
             return;
-        }
-    }
-
-    // Don't downgrade. If the entry was unreachable just now and the
-    // existing plist already embeds a working `--join <token>` (or
-    // `--join-url`), keep it. The token may be stale eventually, but
-    // it beats clobbering a known-good configuration with a Nostr-only
-    // fallback that takes minutes to converge — and we'll get another
-    // shot on the next desktop launch.
-    if fetch_failed {
-        if let Some(bytes) = &existing {
-            if let Ok(text) = std::str::from_utf8(bytes) {
-                if text.contains("--join</string>") || text.contains("--join-url</string>") {
-                    eprintln!(
-                        "[closedmesh] self-heal: keeping existing plist; refusing to \
-                         downgrade a working --join to Nostr-only fallback"
-                    );
-                    return;
-                }
-            }
         }
     }
 
@@ -542,40 +528,47 @@ fn cli_supports_join_url(bin: &std::path::Path) -> bool {
 /// was the problem, and the user's plist quietly fell back to a private
 /// mesh of one.
 #[cfg(target_os = "macos")]
-fn fetch_entry_token() -> Option<String> {
-    // 5 s connect, 10 s read. Each attempt runs from the retry loop
-    // which fires at T+3 s, T+8 s, T+15 s, T+30 s, then every 60 s —
-    // so a slow first attempt doesn't block the user long before a
-    // retry takes over. We want a timeout short enough that a captive
-    // portal (which often stalls rather than refusing) doesn't wedge
-    // the retry for a full minute, but long enough to survive a cold
-    // Vercel function or sluggish DNS.
+fn fetch_entry_token() -> String {
+    // 5 s connect, 10 s read. Each attempt is called from the retry loop
+    // (T+3 s, T+8 s, T+15 s, T+30 s, then every 60 s) so a slow attempt
+    // doesn't stall the next try for long.
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(Duration::from_secs(10))
         .build();
-    let resp = match agent.get(ENTRY_STATUS_URL).call() {
-        Ok(r) => r,
-        Err(e) => {
+
+    let live = (|| {
+        let resp = agent.get(ENTRY_STATUS_URL).call().map_err(|e| {
             eprintln!("[closedmesh] self-heal: GET {ENTRY_STATUS_URL} failed: {e}");
-            return None;
-        }
-    };
-    let payload: InvitePayload = match resp.into_json() {
-        Ok(p) => p,
-        Err(e) => {
+            e.to_string()
+        })?;
+        let payload: InvitePayload = resp.into_json().map_err(|e| {
             eprintln!("[closedmesh] self-heal: parse {ENTRY_STATUS_URL} body failed: {e}");
-            return None;
+            e.to_string()
+        })?;
+        let t = payload
+            .token
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        t.ok_or_else(|| {
+            eprintln!("[closedmesh] self-heal: {ENTRY_STATUS_URL} returned no `token` field");
+            "no token field".to_string()
+        })
+    })();
+
+    match live {
+        Ok(t) => {
+            eprintln!("[closedmesh] self-heal: fetched live entry token");
+            t
         }
-    };
-    let token = payload
-        .token
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty());
-    if token.is_none() {
-        eprintln!("[closedmesh] self-heal: {ENTRY_STATUS_URL} returned no `token` field");
+        Err(_) => {
+            eprintln!(
+                "[closedmesh] self-heal: live fetch failed — using built-in fallback token \
+                 (relay-based connection will still work)"
+            );
+            FALLBACK_JOIN_TOKEN.to_string()
+        }
     }
-    token
 }
 
 /// Mirrors the plist `install.sh` writes today, but with the
