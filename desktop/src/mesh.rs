@@ -280,49 +280,55 @@ pub fn start_service_if_installed() {
     };
 
     if let Some(bin) = bin {
-        #[cfg(target_os = "macos")]
-        {
-            repair_launchd_plist(&bin);
-            // Self-heal retry: keep re-attempting the fetch_entry_token
-            // dance in the background so a transient network failure
-            // on the very first launch (slow DNS, captive portal still
-            // resolving, GitHub release CDN cold start) doesn't leave
-            // the user in the rc2 "discovered but not joined" purgatory
-            // forever. The byte-equality guard inside repair_launchd_plist
-            // makes subsequent successful runs no-ops once the plist is
-            // already correct, so this loop is cheap when things work.
-            spawn_self_heal_retry_loop(bin.clone());
-        }
-        let _ = bin;
+        // Start the runtime immediately with whatever plist exists.
+        // We do NOT block here waiting for a token fetch — that can take
+        // up to 40s on a cold network, during which the runtime isn't
+        // running at all and the user sees a frozen yellow "checking
+        // status" circle. The async retry loop below injects --join as
+        // soon as a token is available.
         start_service();
+
+        // Self-heal: inject --join token in the background. First
+        // attempt fires in 3 s (covers the common case where the
+        // network was just a beat behind the app launch). Subsequent
+        // attempts at 8 s, 15 s, 30 s, then every 60 s for 15 min,
+        // then every 5 min for an hour. Once --join is in the plist the
+        // byte-equality guard makes further calls no-ops.
+        #[cfg(target_os = "macos")]
+        spawn_self_heal_retry_loop(bin.clone());
+
+        let _ = bin;
     }
 }
 
-/// Background retry loop for `repair_launchd_plist` — kicks off every
-/// 60s for the first 15 minutes after launch, then every 5 minutes for
-/// the rest of the hour, and stops. Each iteration just calls back into
-/// `repair_launchd_plist`, which already short-circuits when the plist
-/// matches what we'd write (so a healthy install incurs nothing more
-/// than a cheap HTTPS HEAD-equivalent every minute).
+/// Background retry loop for `repair_launchd_plist`.
 ///
-/// Why time-bounded: the goal is to recover from a transient first-
-/// launch failure, not to run forever. After an hour we've either
-/// converged or we have a real problem the user has to surface
-/// themselves; either way the desktop has bigger fish to fry than
-/// burning a thread on indefinite polling.
+/// Fires at rapidly decreasing intervals initially (3 s, 8 s, 15 s,
+/// 30 s) to handle the common "network catches up just after launch"
+/// case quickly, then at 60 s intervals for 15 min, then 5 min for an
+/// hour. The whole loop lives in a dedicated OS thread; it terminates
+/// when the app exits or after the hour is up.
+///
+/// repair_launchd_plist short-circuits via byte-equality when the plist
+/// already matches what we'd write — so a healthy install (plist
+/// already has --join from the previous run) costs nothing more than
+/// one HTTPS request per interval.
 #[cfg(target_os = "macos")]
 fn spawn_self_heal_retry_loop(bin: PathBuf) {
     std::thread::spawn(move || {
-        // Phase 1: aggressive — 15 attempts × 60s = 15 minutes. Covers
-        // the typical "still connecting to Wi-Fi when the .app launched"
-        // case within a single user session.
+        // Quick bursts — covers "captive portal cleared" / "DNS just
+        // resolved" / "Vercel cold start warmed up" within the first
+        // ~30 s of the user's session.
+        for secs in [3u64, 8, 15, 30] {
+            std::thread::sleep(Duration::from_secs(secs));
+            repair_launchd_plist(&bin);
+        }
+        // Steady phase 1: every 60 s for 15 min.
         for _ in 0..15 {
             std::thread::sleep(Duration::from_secs(60));
             repair_launchd_plist(&bin);
         }
-        // Phase 2: relaxed — 9 attempts × 5 minutes = 45 minutes. Catches
-        // the "user closed the lid for a while and the entry node rotated
-        // tokens" case without polling forever.
+        // Steady phase 2: every 5 min for another 45 min.
         for _ in 0..9 {
             std::thread::sleep(Duration::from_secs(300));
             repair_launchd_plist(&bin);
@@ -537,18 +543,16 @@ fn cli_supports_join_url(bin: &std::path::Path) -> bool {
 /// mesh of one.
 #[cfg(target_os = "macos")]
 fn fetch_entry_token() -> Option<String> {
-    // Generous timeouts because this runs on the launch path of a fresh
-    // install — the user may be on a slow Wi-Fi, behind a captive portal
-    // that's still resolving, or just hit a cold Vercel function. The
-    // shorter timeouts in v0.1.19 missed the token on at least one new-
-    // laptop install (verified in the field), leaving the runtime
-    // running on Nostr-only auto-discovery, which rc2 doesn't reliably
-    // converge from. The retry loop in `spawn_self_heal_retry_loop`
-    // makes a slow first attempt non-fatal, but generous timeouts here
-    // mean we usually don't need the retry at all.
+    // 5 s connect, 10 s read. Each attempt runs from the retry loop
+    // which fires at T+3 s, T+8 s, T+15 s, T+30 s, then every 60 s —
+    // so a slow first attempt doesn't block the user long before a
+    // retry takes over. We want a timeout short enough that a captive
+    // portal (which often stalls rather than refusing) doesn't wedge
+    // the retry for a full minute, but long enough to survive a cold
+    // Vercel function or sluggish DNS.
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(30))
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(10))
         .build();
     let resp = match agent.get(ENTRY_STATUS_URL).call() {
         Ok(r) => r,
