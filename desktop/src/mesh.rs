@@ -269,13 +269,26 @@ pub fn fetch_status() -> MeshStatus {
 /// to re-bootstrap the launchd agent. We do this on every launch so users
 /// always get the canonical mesh without ever running a terminal command.
 pub fn start_service_if_installed() {
-    // First-launch auto-install: if the CLI runtime isn't on disk yet,
-    // fetch the binary for this platform from the closedmesh-llm GitHub
-    // release and drop it into ~/.local/bin/closedmesh. Avoids the
-    // historical two-step install (curl-pipe-to-shell + .app); friends
-    // double-click the .app and everything else happens on its own.
+    // Locate an existing runtime binary or install a fresh one. When a
+    // binary is already present we also verify that it meets the minimum
+    // version requirement. Old installs (v0.1.16 era, pre-rc2) may have
+    // a binary that predates the --relay / --headless / --join flags we
+    // emit in the launchd plist. If the version is too old we delete the
+    // binary and let ensure_runtime_installed fetch the current release.
     let bin = match locate_binary() {
-        Some(b) => Some(b),
+        Some(b) => {
+            if runtime_meets_minimum(&b) {
+                Some(b)
+            } else {
+                eprintln!(
+                    "[closedmesh] runtime at {} is below minimum version; \
+                     reinstalling from GitHub releases",
+                    b.display()
+                );
+                let _ = std::fs::remove_file(&b);
+                ensure_runtime_installed()
+            }
+        }
         None => ensure_runtime_installed(),
     };
 
@@ -763,6 +776,78 @@ pub fn log_dir() -> Option<PathBuf> {
 /// next first-launch (or any launch where the user has nuked the binary).
 const RUNTIME_RELEASE_BASE: &str =
     "https://github.com/closedmesh/closedmesh-llm/releases/latest/download";
+
+/// Return `true` if the installed runtime binary is new enough to support
+/// all the flags we emit in the launchd plist (`--relay`, `--join`,
+/// `--headless`, `--publish`). The minimum acceptable version is
+/// `0.65.0-rc2`; anything older (rc1, 0.64.x, …) gets replaced.
+///
+/// We call `closedmesh --version`, parse the `major.minor.patch` triplet
+/// from the first token that looks like a semantic version, and compare
+/// against the threshold (0, 65, 0). The pre-release suffix is handled
+/// as a special case: among 0.65.0 pre-releases only rc2 and above are
+/// accepted (rc1 lacked `--relay` support).
+///
+/// Any binary that refuses to run, produces no version output, or has an
+/// unparseable version string is conservatively rejected so it gets
+/// replaced with a known-good download.
+fn runtime_meets_minimum(bin: &std::path::Path) -> bool {
+    let out = match Command::new(bin).arg("--version").output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!(
+                "[closedmesh] runtime version check failed ({}): {e}",
+                bin.display()
+            );
+            return false;
+        }
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let text = text.trim();
+    eprintln!("[closedmesh] runtime reports version: {text:?}");
+
+    // Find the first substring that looks like "MAJOR.MINOR.PATCH…"
+    let version_token = text
+        .split_whitespace()
+        .find(|t| t.chars().next().map_or(false, |c| c.is_ascii_digit()))
+        .unwrap_or(text);
+
+    // Parse "0.65.0-rc2" → (0, 65, 0, Some("rc2"))
+    let (maj, min, patch, pre) = parse_semver(version_token);
+
+    // Accept any version that is strictly greater than 0.65.0, or is
+    // exactly 0.65.0 without a pre-release suffix, or is exactly
+    // 0.65.0-rc2.
+    if (maj, min, patch) > (0, 65, 0) {
+        return true;
+    }
+    if (maj, min, patch) == (0, 65, 0) {
+        return match pre.as_deref() {
+            None => true,            // 0.65.0 full release
+            Some("rc2") => true,    // exact minimum we need
+            Some(_) => false,       // rc1 or any other pre-release
+        };
+    }
+    // (maj, min, patch) < (0, 65, 0) — definitely too old
+    false
+}
+
+/// Parse "0.65.0-rc2" into (0u32, 65u32, 0u32, Some("rc2")).
+/// Returns (0, 0, 0, None) for any unparseable input.
+fn parse_semver(s: &str) -> (u32, u32, u32, Option<String>) {
+    let (numeric, pre) = match s.find('-') {
+        Some(i) => (&s[..i], Some(s[i + 1..].to_string())),
+        None => (s, None),
+    };
+    let parts: Vec<u32> = numeric
+        .split('.')
+        .map(|p| p.parse().unwrap_or(0))
+        .collect();
+    let maj = parts.first().copied().unwrap_or(0);
+    let min = parts.get(1).copied().unwrap_or(0);
+    let patch = parts.get(2).copied().unwrap_or(0);
+    (maj, min, patch, pre)
+}
 
 /// First-launch installer for the `closedmesh` CLI runtime.
 ///
