@@ -292,6 +292,37 @@ impl Sidecar {
             }
         }
 
+        // On macOS, any binary that lives in Contents/MacOS/ can show up in
+        // the Dock while it's running — even a headless helper like our Node
+        // sidecar. The user sees a bouncing terminal icon labelled "node"
+        // that opens nothing when clicked. The root cause: macOS LaunchServices
+        // and the window-server session tracking see a new foreground-eligible
+        // process in the bundle and give it a Dock presence.
+        //
+        // Fix: before exec'ing Node, call setsid(2) to move the child into a
+        // brand-new POSIX session with no controlling terminal. A process in its
+        // own session is not considered a foreground application by the Dock or
+        // the window server, so no icon appears. We do this via pre_exec (safe
+        // because setsid is async-signal-safe) and declare the libc symbol
+        // directly rather than pulling in the full `libc` crate.
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::process::CommandExt;
+            extern "C" {
+                fn setsid() -> i32;
+            }
+            // SAFETY: setsid() is async-signal-safe (POSIX). The only failure
+            // mode (EPERM, already session leader) is harmless — we just
+            // continue exec'ing. pre_exec runs in the child after fork but
+            // before exec, where only async-signal-safe operations are allowed.
+            unsafe {
+                command.pre_exec(|| {
+                    setsid();
+                    Ok(())
+                });
+            }
+        }
+
         let child = command
             // Run from the controller dir so relative paths inside the
             // standalone bundle resolve correctly.

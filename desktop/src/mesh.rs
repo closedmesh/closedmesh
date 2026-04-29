@@ -281,10 +281,53 @@ pub fn start_service_if_installed() {
 
     if let Some(bin) = bin {
         #[cfg(target_os = "macos")]
-        repair_launchd_plist(&bin);
+        {
+            repair_launchd_plist(&bin);
+            // Self-heal retry: keep re-attempting the fetch_entry_token
+            // dance in the background so a transient network failure
+            // on the very first launch (slow DNS, captive portal still
+            // resolving, GitHub release CDN cold start) doesn't leave
+            // the user in the rc2 "discovered but not joined" purgatory
+            // forever. The byte-equality guard inside repair_launchd_plist
+            // makes subsequent successful runs no-ops once the plist is
+            // already correct, so this loop is cheap when things work.
+            spawn_self_heal_retry_loop(bin.clone());
+        }
         let _ = bin;
         start_service();
     }
+}
+
+/// Background retry loop for `repair_launchd_plist` — kicks off every
+/// 60s for the first 15 minutes after launch, then every 5 minutes for
+/// the rest of the hour, and stops. Each iteration just calls back into
+/// `repair_launchd_plist`, which already short-circuits when the plist
+/// matches what we'd write (so a healthy install incurs nothing more
+/// than a cheap HTTPS HEAD-equivalent every minute).
+///
+/// Why time-bounded: the goal is to recover from a transient first-
+/// launch failure, not to run forever. After an hour we've either
+/// converged or we have a real problem the user has to surface
+/// themselves; either way the desktop has bigger fish to fry than
+/// burning a thread on indefinite polling.
+#[cfg(target_os = "macos")]
+fn spawn_self_heal_retry_loop(bin: PathBuf) {
+    std::thread::spawn(move || {
+        // Phase 1: aggressive — 15 attempts × 60s = 15 minutes. Covers
+        // the typical "still connecting to Wi-Fi when the .app launched"
+        // case within a single user session.
+        for _ in 0..15 {
+            std::thread::sleep(Duration::from_secs(60));
+            repair_launchd_plist(&bin);
+        }
+        // Phase 2: relaxed — 9 attempts × 5 minutes = 45 minutes. Catches
+        // the "user closed the lid for a while and the entry node rotated
+        // tokens" case without polling forever.
+        for _ in 0..9 {
+            std::thread::sleep(Duration::from_secs(300));
+            repair_launchd_plist(&bin);
+        }
+    });
 }
 
 pub fn start_service() {
@@ -433,6 +476,25 @@ fn repair_launchd_plist(bin: &std::path::Path) {
         return;
     }
 
+    // Loud success message so an operator tailing stderr.log knows when
+    // self-heal finally took. Especially useful for the retry-loop case
+    // where the *first* launch failed to fetch the token but a later
+    // attempt converged — without this log, success looks identical to
+    // "nothing changed" in the byte-equality short-circuit above.
+    let join_kind = if join_args
+        .iter()
+        .any(|a| a == "--join-url")
+    {
+        "--join-url"
+    } else if join_args.iter().any(|a| a == "--join") {
+        "--join <token>"
+    } else {
+        "Nostr-only fallback (no token fetched)"
+    };
+    eprintln!(
+        "[closedmesh] self-heal: wrote plist with {join_kind}; bouncing launchd"
+    );
+
     bounce_launchd_agent(&plist_path);
 }
 
@@ -475,9 +537,18 @@ fn cli_supports_join_url(bin: &std::path::Path) -> bool {
 /// mesh of one.
 #[cfg(target_os = "macos")]
 fn fetch_entry_token() -> Option<String> {
+    // Generous timeouts because this runs on the launch path of a fresh
+    // install — the user may be on a slow Wi-Fi, behind a captive portal
+    // that's still resolving, or just hit a cold Vercel function. The
+    // shorter timeouts in v0.1.19 missed the token on at least one new-
+    // laptop install (verified in the field), leaving the runtime
+    // running on Nostr-only auto-discovery, which rc2 doesn't reliably
+    // converge from. The retry loop in `spawn_self_heal_retry_loop`
+    // makes a slow first attempt non-fatal, but generous timeouts here
+    // mean we usually don't need the retry at all.
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(3))
-        .timeout_read(Duration::from_secs(5))
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(30))
         .build();
     let resp = match agent.get(ENTRY_STATUS_URL).call() {
         Ok(r) => r,
