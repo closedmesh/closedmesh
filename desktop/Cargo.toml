@@ -1,6 +1,6 @@
 [package]
 name = "closedmesh-desktop"
-version = "0.1.24"
+version = "0.1.25"
 edition = "2021"
 description = "Cross-platform desktop shell for ClosedMesh — an open peer-to-peer mesh of contributed compute serving open-weight models."
 license = "MIT OR Apache-2.0"
@@ -27,11 +27,6 @@ serde_json = "1"
 # endpoint every few seconds, so blocking + small TLS stack (rustls, no
 # system OpenSSL) is the right tradeoff vs. dragging in a full async client.
 ureq = { version = "2", default-features = false, features = ["json", "rustls"] }
-
-# Cross-platform clipboard for the "Copy Invite Token" menu action. Tauri's
-# clipboard plugin would also work but pulls in IPC plumbing we don't need
-# from the Rust side.
-arboard = "3"
 
 # Single-shot env var lookups; `dirs` for resolving ~/Library/Logs etc.
 dirs = "5"

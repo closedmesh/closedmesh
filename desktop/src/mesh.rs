@@ -734,24 +734,6 @@ pub fn keep_running_after_quit() -> bool {
     trimmed.starts_with("true")
 }
 
-/// Returns the local node's join token — the value a teammate pastes on
-/// their machine to join this mesh. The runtime mints the token at startup
-/// and publishes it on the admin status endpoint; there is intentionally no
-/// `closedmesh invite create` CLI subcommand because the token is just an
-/// addressable identity for the local node, regenerated each time the
-/// service starts. Same value the CLI consumes via `--join <token>`.
-pub fn create_invite() -> Option<String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_millis(800))
-        .timeout_read(Duration::from_millis(1500))
-        .build();
-    let payload: InvitePayload = agent.get(ADMIN_STATUS_URL).call().ok()?.into_json().ok()?;
-    payload
-        .token
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-}
-
 /// Returns a path to reveal in the OS file browser when the user picks
 /// "Show Logs" from the tray. The runtime + installer + sidecar all
 /// write logs to the platform-specific dir returned by

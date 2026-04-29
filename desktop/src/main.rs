@@ -23,7 +23,6 @@ const MENU_RELOAD: &str = "reload";
 const MENU_ADMIN: &str = "open_admin";
 const MENU_START: &str = "start_service";
 const MENU_STOP: &str = "stop_service";
-const MENU_INVITE: &str = "copy_invite";
 const MENU_LOGS: &str = "show_logs";
 const MENU_QUIT: &str = "quit";
 
@@ -312,21 +311,13 @@ fn build_tray_menu_for_handle(
             None::<&str>,
         )?);
     }
-    builder = builder
-        .item(&MenuItem::with_id(
-            app,
-            MENU_INVITE,
-            "Copy Invite Token",
-            true,
-            None::<&str>,
-        )?)
-        .item(&MenuItem::with_id(
-            app,
-            MENU_LOGS,
-            "Show Logs in File Manager",
-            true,
-            None::<&str>,
-        )?);
+    builder = builder.item(&MenuItem::with_id(
+        app,
+        MENU_LOGS,
+        "Show Logs in File Manager",
+        true,
+        None::<&str>,
+    )?);
 
     builder = builder.separator();
     builder = builder.item(&PredefinedMenuItem::about(
@@ -405,29 +396,6 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
         }
         MENU_STOP => {
             std::thread::spawn(|| mesh::stop_service());
-        }
-        MENU_INVITE => {
-            let app2 = app.clone();
-            std::thread::spawn(move || match mesh::create_invite() {
-                Some(token) => {
-                    if let Ok(mut clip) = arboard::Clipboard::new() {
-                        let _ = clip.set_text(token.clone());
-                    }
-                    show_toast(
-                        &app2,
-                        "Invite token copied",
-                        &format!(
-                            "Share this with a teammate; they run\nclosedmesh serve --join {}",
-                            token
-                        ),
-                    );
-                }
-                None => show_toast(
-                    &app2,
-                    "Couldn't create invite",
-                    "Is the closedmesh CLI installed and on PATH?",
-                ),
-            });
         }
         MENU_LOGS => {
             if let Some(path) = mesh::log_dir() {
@@ -669,19 +637,3 @@ fn open_path(path: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
-/// Tiny modal feedback. Tauri 2's `MessageDialog` would be nicer but
-/// requires the `dialog` plugin — not worth the extra dep for two
-/// places we surface this. We use `eval` on the main webview to call
-/// `alert()` instead. Falls back to no-op if the window is hidden.
-fn show_toast(app: &AppHandle, title: &str, body: &str) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-        let _ = window.show();
-        let _ = window.set_focus();
-        let combined = format!("{title}\n\n{body}");
-        let escaped = combined
-            .replace('\\', "\\\\")
-            .replace('\'', "\\'")
-            .replace('\n', "\\n");
-        let _ = window.eval(&format!("window.alert('{}')", escaped));
-    }
-}
