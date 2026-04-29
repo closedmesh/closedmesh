@@ -329,6 +329,20 @@ write_launchd_plist() {
         args_xml+="        <string>${a}</string>
 "
     done
+    # Override the runtime's default Iroh relay map. Without this the
+    # closedmesh-llm v0.65.0-rc2 binary uses a *.michaelneale.mesh-llm.iroh.link
+    # default that no longer resolves, the runtime can't tunnel back to the
+    # public entry node behind mesh.closedmesh.com, and closedmesh.com shows
+    # "Mesh online · 0 models" even with a model loaded locally. n0's canary
+    # relays are publicly maintained by the iroh team.
+    args_xml+="        <string>--relay</string>
+"
+    args_xml+="        <string>https://use1-1.relay.n0.iroh-canary.iroh.link./</string>
+"
+    args_xml+="        <string>--relay</string>
+"
+    args_xml+="        <string>https://euw-1.relay.n0.iroh-canary.iroh.link./</string>
+"
     args_xml+="        <string>--headless</string>"
 
     cat >"$LAUNCHD_PLIST" <<PLIST
@@ -397,7 +411,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/closedmesh serve --auto --publish --mesh-name closedmesh${exec_join} --headless
+ExecStart=${INSTALL_DIR}/closedmesh serve --auto --publish --mesh-name closedmesh${exec_join} --relay https://use1-1.relay.n0.iroh-canary.iroh.link./ --relay https://euw-1.relay.n0.iroh-canary.iroh.link./ --headless
 WorkingDirectory=${HOME}
 Restart=on-failure
 RestartSec=5

@@ -303,6 +303,23 @@ const SERVICE_LABEL: &str = "dev.closedmesh.closedmesh";
 #[cfg(target_os = "macos")]
 const ENTRY_STATUS_URL: &str = "https://mesh.closedmesh.com/api/status";
 
+/// Public Iroh relays we explicitly hand to the runtime via `--relay`.
+///
+/// closedmesh-llm v0.65.0-rc2 (the latest published release at the time
+/// of writing) hard-codes a default relay map of
+/// `*.michaelneale.mesh-llm.iroh.link` URLs that no longer resolve, so
+/// without an override the runtime can't punch through NAT to reach the
+/// public entry node — which is exactly the failure that surfaces on
+/// `closedmesh.com` as "Mesh online · 0 models" even when a user is
+/// running a model locally. Until the runtime ships a fix we override
+/// the relay map at the launchd plist level. n0's canary relays are
+/// public and operationally maintained by the iroh team.
+#[cfg(target_os = "macos")]
+const DEFAULT_RELAYS: &[&str] = &[
+    "https://use1-1.relay.n0.iroh-canary.iroh.link./",
+    "https://euw-1.relay.n0.iroh-canary.iroh.link./",
+];
+
 /// Rewrites `~/Library/LaunchAgents/dev.closedmesh.closedmesh.plist` so the
 /// service uses arguments compatible with the installed `closedmesh` binary,
 /// then bounces the launchd agent. A no-op if we can't locate `$HOME` or if
@@ -513,6 +530,10 @@ fn build_launchd_plist_xml(bin: &std::path::Path, join_args: &[String]) -> Strin
         "closedmesh".to_string(),
     ];
     program_args.extend(join_args.iter().cloned());
+    for relay in DEFAULT_RELAYS {
+        program_args.push("--relay".to_string());
+        program_args.push((*relay).to_string());
+    }
     program_args.push("--headless".to_string());
 
     let args_xml = program_args

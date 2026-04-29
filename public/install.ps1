@@ -199,7 +199,13 @@ function Install-ScheduledTaskUnit {
         }
     }
 
-    $argString = "serve --auto --publish --mesh-name closedmesh${joinSegment} --headless"
+    # Override the runtime's default Iroh relay map: closedmesh-llm v0.65.0-rc2
+    # ships *.michaelneale.mesh-llm.iroh.link defaults that no longer resolve,
+    # so without these the runtime can't tunnel through NAT to the public
+    # entry node and closedmesh.com shows "0 models". n0's canary relays
+    # are publicly maintained.
+    $relayArgs = '--relay https://use1-1.relay.n0.iroh-canary.iroh.link./ --relay https://euw-1.relay.n0.iroh-canary.iroh.link./'
+    $argString = "serve --auto --publish --mesh-name closedmesh${joinSegment} ${relayArgs} --headless"
     $action    = New-ScheduledTaskAction    -Execute $bin -Argument $argString -WorkingDirectory $env:USERPROFILE
     $trigger   = New-ScheduledTaskTrigger   -AtLogOn -User $env:USERNAME
     $settings  = New-ScheduledTaskSettingsSet `
