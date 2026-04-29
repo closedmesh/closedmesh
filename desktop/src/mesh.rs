@@ -269,7 +269,17 @@ pub fn fetch_status() -> MeshStatus {
 /// to re-bootstrap the launchd agent. We do this on every launch so users
 /// always get the canonical mesh without ever running a terminal command.
 pub fn start_service_if_installed() {
-    if let Some(bin) = locate_binary() {
+    // First-launch auto-install: if the CLI runtime isn't on disk yet,
+    // fetch the binary for this platform from the closedmesh-llm GitHub
+    // release and drop it into ~/.local/bin/closedmesh. Avoids the
+    // historical two-step install (curl-pipe-to-shell + .app); friends
+    // double-click the .app and everything else happens on its own.
+    let bin = match locate_binary() {
+        Some(b) => Some(b),
+        None => ensure_runtime_installed(),
+    };
+
+    if let Some(bin) = bin {
         #[cfg(target_os = "macos")]
         repair_launchd_plist(&bin);
         let _ = bin;
@@ -652,6 +662,230 @@ pub fn log_dir() -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+// ---------- Runtime auto-install ----------------------------------------
+
+/// GitHub "latest release" asset URL for the closedmesh-llm runtime. The
+/// `/releases/latest/download/<asset>` shape redirects to whatever GitHub
+/// currently considers the latest non-prerelease — meaning desktop builds
+/// don't have to know specific tag names, the runtime can ship updates
+/// independently, and the desktop self-installer picks them up on the
+/// next first-launch (or any launch where the user has nuked the binary).
+const RUNTIME_RELEASE_BASE: &str =
+    "https://github.com/closedmesh/closedmesh-llm/releases/latest/download";
+
+/// First-launch installer for the `closedmesh` CLI runtime.
+///
+/// The .app is a thin shell — it talks to a separate runtime binary that
+/// does the real work (joining the mesh, hosting llama.cpp, exposing the
+/// admin/OpenAI APIs). For the longest time the runtime had to be installed
+/// separately via `curl … | sh`, which means a "download the .app and chat"
+/// pitch to non-technical users hit a wall the moment they opened the app.
+///
+/// This function closes that gap: if `locate_binary` came up empty, we
+/// fetch the platform-appropriate tarball from the latest closedmesh-llm
+/// GitHub release, extract it into `~/.local/bin/closedmesh`, and return
+/// the resolved path. The caller (`start_service_if_installed`) then runs
+/// the normal launchd self-heal + service start on it.
+///
+/// Failure modes (all return `None`):
+///   - Unsupported platform (no published asset for our OS/arch).
+///   - Network / GitHub failure (offline, rate limit).
+///   - Tarball extraction failure (corrupt download, missing `tar`).
+///
+/// In all of those cases we land in the same "service not running"
+/// branch we'd have hit without the auto-installer — strictly an
+/// improvement over the previous behavior.
+fn ensure_runtime_installed() -> Option<PathBuf> {
+    let asset = runtime_asset_name()?;
+    let dest = runtime_install_path()?;
+
+    if dest.is_file() {
+        // Race: someone (e.g. a parallel `install.sh` run) put the binary
+        // in place while we were probing. Use it.
+        return Some(dest);
+    }
+
+    eprintln!("[closedmesh] runtime not found; fetching {asset} from GitHub releases");
+
+    let url = format!("{RUNTIME_RELEASE_BASE}/{asset}");
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(120))
+        .redirects(8)
+        .build();
+
+    let resp = match agent.get(&url).call() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[closedmesh] runtime download failed: GET {url}: {e}");
+            return None;
+        }
+    };
+
+    // Stream the tarball into a temp file in the same dir we'll extract
+    // to, so the rename/move at the end is on the same filesystem.
+    let parent = dest.parent()?;
+    let _ = std::fs::create_dir_all(parent);
+    let tmp_archive = parent.join(format!(".closedmesh.{asset}.partial"));
+
+    let mut reader = resp.into_reader();
+    let mut tmp_file = match std::fs::File::create(&tmp_archive) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "[closedmesh] runtime install: create {} failed: {e}",
+                tmp_archive.display()
+            );
+            return None;
+        }
+    };
+    if let Err(e) = std::io::copy(&mut reader, &mut tmp_file) {
+        eprintln!("[closedmesh] runtime download: stream failed: {e}");
+        let _ = std::fs::remove_file(&tmp_archive);
+        return None;
+    }
+    drop(tmp_file);
+
+    let extracted_ok = if asset.ends_with(".tar.gz") {
+        extract_tar_gz(&tmp_archive, parent)
+    } else if asset.ends_with(".zip") {
+        extract_zip(&tmp_archive, parent)
+    } else {
+        eprintln!("[closedmesh] runtime install: unknown archive type for {asset}");
+        false
+    };
+
+    let _ = std::fs::remove_file(&tmp_archive);
+
+    if !extracted_ok {
+        return None;
+    }
+
+    if !dest.is_file() {
+        eprintln!(
+            "[closedmesh] runtime install: extraction succeeded but {} is missing",
+            dest.display()
+        );
+        return None;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&dest) {
+            let mut perm = meta.permissions();
+            perm.set_mode(0o755);
+            let _ = std::fs::set_permissions(&dest, perm);
+        }
+    }
+
+    // macOS Gatekeeper quarantines binaries downloaded by a quarantined
+    // .app. The runtime would refuse to launch with "killed: 9" on first
+    // try and only work after the user did the System Settings -> Open
+    // Anyway dance. Strip the attribute if it's there — best-effort,
+    // non-fatal.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("xattr")
+            .args(["-d", "com.apple.quarantine"])
+            .arg(&dest)
+            .output();
+    }
+
+    eprintln!("[closedmesh] runtime installed at {}", dest.display());
+    Some(dest)
+}
+
+/// GitHub release asset name for our build target. `None` means we don't
+/// publish a runtime for this platform yet — the caller should leave the
+/// binary uninstalled and the user falls through to the chat-from-website
+/// experience instead of running a node locally.
+fn runtime_asset_name() -> Option<&'static str> {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some("closedmesh-darwin-aarch64.tar.gz")
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Some("closedmesh-darwin-x86_64.tar.gz")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("closedmesh-linux-x86_64.tar.gz")
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Some("closedmesh-linux-aarch64.tar.gz")
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some("closedmesh-windows-x86_64.zip")
+    } else {
+        None
+    }
+}
+
+/// Where the auto-installer puts the binary. Matches the locations
+/// `locate_binary` already searches, so a successful install is
+/// transparent to the rest of the codebase.
+fn runtime_install_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let dir = home.join(".local").join("bin");
+    let name = if cfg!(windows) {
+        "closedmesh.exe"
+    } else {
+        "closedmesh"
+    };
+    Some(dir.join(name))
+}
+
+/// Extracts a `.tar.gz` archive into `dest_dir`, expecting the bundled
+/// `closedmesh` binary at the archive root. We shell out to `tar`
+/// because every platform we target ships it (macOS, Linux, and
+/// Windows 10 1803+), and pulling in `flate2` + `tar` crates would
+/// double the desktop binary size for one-shot first-launch use.
+fn extract_tar_gz(archive: &std::path::Path, dest_dir: &std::path::Path) -> bool {
+    let output = match Command::new("tar")
+        .arg("-xzf")
+        .arg(archive)
+        .arg("-C")
+        .arg(dest_dir)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[closedmesh] runtime install: spawn `tar` failed: {e}");
+            return false;
+        }
+    };
+    if !output.status.success() {
+        eprintln!(
+            "[closedmesh] runtime install: tar -xzf failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return false;
+    }
+    true
+}
+
+/// Same as `extract_tar_gz` but for `.zip` (Windows runtime artifacts).
+/// Windows 10 1803+ ships a `tar` that handles `.zip`, so we use the
+/// same tool everywhere instead of plumbing a separate code path.
+fn extract_zip(archive: &std::path::Path, dest_dir: &std::path::Path) -> bool {
+    let output = match Command::new("tar")
+        .arg("-xf")
+        .arg(archive)
+        .arg("-C")
+        .arg(dest_dir)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[closedmesh] runtime install: spawn `tar` failed (zip): {e}");
+            return false;
+        }
+    };
+    if !output.status.success() {
+        eprintln!(
+            "[closedmesh] runtime install: tar -xf (zip) failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return false;
+    }
+    true
 }
 
 // ---------- Binary discovery --------------------------------------------
