@@ -321,6 +321,7 @@ fn repair_launchd_plist(bin: &std::path::Path) {
     };
 
     let supports_join_url = cli_supports_join_url(bin);
+    let mut fetch_failed = false;
     let join_args: Vec<String> = if supports_join_url {
         vec!["--join-url".to_string(), ENTRY_STATUS_URL.to_string()]
     } else {
@@ -334,6 +335,7 @@ fn repair_launchd_plist(bin: &std::path::Path) {
                     "[closedmesh] self-heal: entry token fetch from {ENTRY_STATUS_URL} \
                      returned no token; falling back to Nostr auto-discovery"
                 );
+                fetch_failed = true;
                 Vec::new()
             }
         }
@@ -341,12 +343,34 @@ fn repair_launchd_plist(bin: &std::path::Path) {
 
     let xml = build_launchd_plist_xml(bin, &join_args);
 
+    let existing = std::fs::read(&plist_path).ok();
+
     // If the plist is already byte-identical to what we'd write, skip
     // the rewrite entirely. Avoids a needless launchd bounce on every
     // app launch (which would race against a freshly-started runtime).
-    if let Ok(existing) = std::fs::read(&plist_path) {
-        if existing == xml.as_bytes() {
+    if let Some(bytes) = &existing {
+        if bytes == xml.as_bytes() {
             return;
+        }
+    }
+
+    // Don't downgrade. If the entry was unreachable just now and the
+    // existing plist already embeds a working `--join <token>` (or
+    // `--join-url`), keep it. The token may be stale eventually, but
+    // it beats clobbering a known-good configuration with a Nostr-only
+    // fallback that takes minutes to converge — and we'll get another
+    // shot on the next desktop launch.
+    if fetch_failed {
+        if let Some(bytes) = &existing {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                if text.contains("--join</string>") || text.contains("--join-url</string>") {
+                    eprintln!(
+                        "[closedmesh] self-heal: keeping existing plist; refusing to \
+                         downgrade a working --join to Nostr-only fallback"
+                    );
+                    return;
+                }
+            }
         }
     }
 
