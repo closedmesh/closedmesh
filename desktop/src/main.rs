@@ -416,9 +416,21 @@ fn status_poll_loop(app: AppHandle, state: Arc<AppState>) {
 }
 
 fn apply_status(app: &AppHandle, state: &Arc<AppState>, status: &MeshStatus) {
-    {
+    // Only push a new menu/tooltip when something visible to the tray
+    // actually changed. Replacing `NSStatusItem.menu` while it's being
+    // tracked dismisses the open menu on macOS — that's what made the
+    // tray appear to close the instant the user hovered over it (the
+    // poll fires every ~5s and clobbered the live menu). With no
+    // status delta, the previously installed menu keeps tracking
+    // cleanly through the user's interaction.
+    let changed = {
         let mut guard = state.last_status.lock().unwrap();
+        let changed = *guard != *status;
         *guard = status.clone();
+        changed
+    };
+    if !changed {
+        return;
     }
 
     let tooltip = render_tooltip(status);
