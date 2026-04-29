@@ -153,15 +153,54 @@ function Install-ScheduledTaskUnit {
     # installer idempotent.
     schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null
 
-    # `serve --auto --mesh-name closedmesh --join-url ...` discovers and
+    # `serve --auto --publish --mesh-name closedmesh ...` discovers and
     # joins the public ClosedMesh through the canonical entry node at
-    # mesh.closedmesh.com. The runtime fetches the entry's invite token
-    # from --join-url on startup so this scheduled task never has to embed
-    # a token that rotates whenever the entry node restarts. Don't pass
-    # --private-only
-    # here — that would hide the node from other peers and from the public
-    # entry that closedmesh.com proxies through.
-    $action    = New-ScheduledTaskAction    -Execute $bin -Argument 'serve --auto --mesh-name closedmesh --join-url https://mesh.closedmesh.com/api/status --headless' -WorkingDirectory $env:USERPROFILE
+    # mesh.closedmesh.com, AND advertises this node on Nostr so peers
+    # and the public entry can find it. Without --publish closedmesh.com
+    # shows "0 models" even when joined.
+    #
+    # `--join-url` is preferred (the runtime re-fetches the token on
+    # every restart so an entry-node key rotation doesn't strand
+    # installs), but we only embed it when the installed CLI actually
+    # understands the flag — closedmesh-llm < v0.65.0 crashloops with
+    # `error: unexpected argument '--join-url'`. For older CLIs we
+    # embed a literal `--join <token>` fetched at install-time instead.
+    $supportsJoinUrl = $false
+    try {
+        $help = & $bin serve --help 2>&1 | Out-String
+        if ($help -match '--join-url') { $supportsJoinUrl = $true }
+        else {
+            $help2 = & $bin serve --help-advanced 2>&1 | Out-String
+            if ($help2 -match '--join-url') { $supportsJoinUrl = $true }
+        }
+    } catch {
+        $supportsJoinUrl = $false
+    }
+
+    $joinSegment = ''
+    if ($supportsJoinUrl) {
+        $joinSegment = ' --join-url https://mesh.closedmesh.com/api/status'
+        Write-Info 'CLI supports --join-url; embedding it in the Scheduled Task.'
+    } else {
+        $token = $null
+        try {
+            $resp  = Invoke-WebRequest -UseBasicParsing -TimeoutSec 6 -Uri 'https://mesh.closedmesh.com/api/status'
+            $json  = $resp.Content | ConvertFrom-Json
+            if ($json.token) { $token = [string]$json.token }
+        } catch {
+            $token = $null
+        }
+        if ($token) {
+            $joinSegment = " --join $token"
+            Write-Info 'Older CLI without --join-url; embedded a fresh invite token.'
+        } else {
+            Write-Warn2 'Could not embed a join arg (older CLI, entry node unreachable).'
+            Write-Warn2 'Service will fall back to Nostr auto-discovery.'
+        }
+    }
+
+    $argString = "serve --auto --publish --mesh-name closedmesh${joinSegment} --headless"
+    $action    = New-ScheduledTaskAction    -Execute $bin -Argument $argString -WorkingDirectory $env:USERPROFILE
     $trigger   = New-ScheduledTaskTrigger   -AtLogOn -User $env:USERNAME
     $settings  = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `

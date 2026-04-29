@@ -35,18 +35,36 @@ pub struct MeshStatus {
 /// surface in the tray. Anything missing falls back to a default — the
 /// admin API has churned a couple of times during early development and
 /// we'd rather degrade gracefully than crash on a missing field.
+///
+/// Field coverage as of v0.65 of the runtime: the runtime's own
+/// `127.0.0.1:3131/api/status` exposes `peers` (an array of remote nodes),
+/// `models`, `serving_models`, `node_status`, and `capability` — but
+/// neither `online` nor `node_count` nor `nodes` (those names are only
+/// emitted by the website's higher-level `/api/status` aggregator). The
+/// previous version of this struct only knew about the website's names,
+/// so against a live runtime the parse would succeed but every field
+/// would be `None`, leaving `online: false` — and the tray's Start/Stop
+/// menu item permanently stuck on "Start" while the service was very
+/// much running.
 #[derive(Debug, Deserialize, Default)]
 struct StatusPayload {
-    #[serde(default)]
-    online: Option<bool>,
     #[serde(default)]
     node_count: Option<usize>,
     #[serde(default)]
     nodes: Option<Vec<NodeRow>>,
+    /// Runtime emits this; website aggregator emits `nodes` instead.
+    /// Either is treated as proof the runtime is up + a way to count
+    /// peers.
+    #[serde(default)]
+    peers: Option<Vec<NodeRow>>,
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    model_name: Option<String>,
+    #[serde(default)]
     models: Option<Vec<String>>,
+    #[serde(default)]
+    serving_models: Option<Vec<String>>,
     #[serde(default)]
     loaded_models: Option<Vec<String>>,
     #[serde(default)]
@@ -112,10 +130,7 @@ fn legacy_controller_up() -> bool {
         .timeout_connect(Duration::from_millis(250))
         .timeout_read(Duration::from_millis(750))
         .build();
-    match agent
-        .get("http://127.0.0.1:3000/api/control/status")
-        .call()
-    {
+    match agent.get("http://127.0.0.1:3000/api/control/status").call() {
         Ok(resp) => resp.header(CONTROLLER_HEADER).is_some(),
         Err(_) => false,
     }
@@ -144,23 +159,61 @@ pub fn fetch_status() -> MeshStatus {
         .timeout_read(Duration::from_millis(1500))
         .build();
 
+    // A successful HTTP 200 from the runtime's admin port is itself
+    // proof the runtime is up — counting nodes/peers refines the tooltip
+    // but doesn't gate the Start/Stop menu item. Treating a parse-able
+    // 200 as `online: true` even when the body is unexpected is the
+    // safer default; the previous behavior (return `default()` on any
+    // missing field) painted "Start ClosedMesh Service" over a service
+    // that was actively serving a model.
     let payload: StatusPayload = match agent.get(ADMIN_STATUS_URL).call() {
         Ok(resp) => match resp.into_json() {
             Ok(p) => p,
-            Err(_) => return MeshStatus::default(),
+            Err(_) => {
+                return MeshStatus {
+                    online: true,
+                    node_count: 1,
+                    model: None,
+                    backend: None,
+                };
+            }
         },
         Err(_) => return MeshStatus::default(),
     };
 
-    let node_count = payload
-        .node_count
+    let peer_count = payload
+        .peers
+        .as_ref()
+        .map(|p| p.len())
         .or_else(|| payload.nodes.as_ref().map(|n| n.len()))
-        .unwrap_or_else(|| if payload.online == Some(true) { 1 } else { 0 });
+        .unwrap_or(0);
+
+    // We talked to the admin port and got JSON back — the runtime is up.
+    // `node_count` always includes self (peers + 1), or falls back to
+    // the website-aggregator's pre-counted value when the response
+    // happens to come from there instead of the runtime directly.
+    let node_count = payload.node_count.unwrap_or(peer_count + 1).max(1);
 
     let model = payload
         .model
+        .or(payload.model_name)
+        .or_else(|| {
+            payload
+                .serving_models
+                .as_ref()
+                .and_then(|m| m.first().cloned())
+        })
         .or_else(|| payload.models.as_ref().and_then(|m| m.first().cloned()))
-        .or_else(|| payload.loaded_models.as_ref().and_then(|m| m.first().cloned()));
+        .or_else(|| {
+            payload
+                .loaded_models
+                .as_ref()
+                .and_then(|m| m.first().cloned())
+        })
+        // Empty placeholders like "(standby)" come back from a router-only
+        // entry node when the local runtime is in standby — not useful in
+        // the tray title, so suppress them.
+        .filter(|m| !m.starts_with('(') && !m.is_empty());
 
     let backend = payload
         .capability
@@ -173,10 +226,18 @@ pub fn fetch_status() -> MeshStatus {
                 .and_then(|n| n.first())
                 .and_then(|n| n.capability.as_ref())
                 .and_then(|c| c.backend.clone())
+        })
+        .or_else(|| {
+            payload
+                .peers
+                .as_ref()
+                .and_then(|n| n.first())
+                .and_then(|n| n.capability.as_ref())
+                .and_then(|c| c.backend.clone())
         });
 
     MeshStatus {
-        online: node_count > 0,
+        online: true,
         node_count,
         model,
         backend,
@@ -237,39 +298,86 @@ const ENTRY_STATUS_URL: &str = "https://mesh.closedmesh.com/api/status";
 /// then bounces the launchd agent. A no-op if we can't locate `$HOME` or if
 /// rewriting fails; the user falls back to whatever plist they had, which
 /// is no worse than today.
+///
+/// Strategy:
+///   1. Probe the installed CLI for `--join-url` support (added in
+///      closedmesh-llm v0.65.0). If present, embed the canonical entry
+///      URL — the runtime then re-fetches the token on every restart,
+///      which means an entry-node restart that rotates its node id
+///      doesn't permanently strand existing installs.
+///   2. Otherwise (older CLI), fetch a token from the entry's HTTP API
+///      *now* and embed it as a literal `--join <token>`. This copy of
+///      the token is good for as long as the entry's node id is stable;
+///      after that the user's next desktop launch will refresh it.
+///   3. If both strategies fail (no `--join-url`, no reachable entry),
+///      we still write a plist with `--auto --publish` so the service
+///      at least advertises itself on Nostr and other peers can find
+///      it via auto-discovery — strictly better than the previous
+///      behavior of writing a private-by-default plist.
 #[cfg(target_os = "macos")]
 fn repair_launchd_plist(bin: &std::path::Path) {
-    let Some(plist_path) = launchd_plist_path() else { return };
+    let Some(plist_path) = launchd_plist_path() else {
+        return;
+    };
 
     let supports_join_url = cli_supports_join_url(bin);
     let join_args: Vec<String> = if supports_join_url {
-        vec![
-            "--join-url".to_string(),
-            ENTRY_STATUS_URL.to_string(),
-        ]
+        vec!["--join-url".to_string(), ENTRY_STATUS_URL.to_string()]
     } else {
         match fetch_entry_token() {
             Some(token) => vec!["--join".to_string(), token],
-            // Couldn't reach the entry node and the binary doesn't support
-            // --join-url; we can still write a plist that auto-discovers
-            // via Nostr. Worse than joining the canonical mesh directly,
-            // but better than leaving a broken `--join-url` arg in place.
-            None => Vec::new(),
+            None => {
+                // Visible in `~/Library/Logs/closedmesh/stderr.log` — gives
+                // us *some* signal next time we have to debug a broken
+                // self-heal in the field.
+                eprintln!(
+                    "[closedmesh] self-heal: entry token fetch from {ENTRY_STATUS_URL} \
+                     returned no token; falling back to Nostr auto-discovery"
+                );
+                Vec::new()
+            }
         }
     };
 
     let xml = build_launchd_plist_xml(bin, &join_args);
 
-    // Atomic rewrite: write to a sibling tmp file and rename. Avoids a
-    // half-written plist if the desktop app is killed mid-write.
+    // If the plist is already byte-identical to what we'd write, skip
+    // the rewrite entirely. Avoids a needless launchd bounce on every
+    // app launch (which would race against a freshly-started runtime).
+    if let Ok(existing) = std::fs::read(&plist_path) {
+        if existing == xml.as_bytes() {
+            return;
+        }
+    }
+
+    // Some users (and at least one previous incarnation of this code,
+    // when manually patching plists during outages) set `chflags uchg`
+    // on the plist to lock it. Best-effort clear that flag before we
+    // try to rewrite — if the user really did intend it as a hard lock,
+    // chflags will succeed but std::fs::write may still fail, and we
+    // early-return.
+    let _ = Command::new("chflags")
+        .args(["nouchg"])
+        .arg(&plist_path)
+        .output();
+
     let tmp_path = plist_path.with_extension("plist.tmp");
     if let Some(parent) = plist_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if std::fs::write(&tmp_path, xml.as_bytes()).is_err() {
+    if let Err(e) = std::fs::write(&tmp_path, xml.as_bytes()) {
+        eprintln!(
+            "[closedmesh] self-heal: failed to write {}: {e}",
+            tmp_path.display()
+        );
         return;
     }
-    if std::fs::rename(&tmp_path, &plist_path).is_err() {
+    if let Err(e) = std::fs::rename(&tmp_path, &plist_path) {
+        eprintln!(
+            "[closedmesh] self-heal: failed to rename {} -> {}: {e}",
+            tmp_path.display(),
+            plist_path.display()
+        );
         let _ = std::fs::remove_file(&tmp_path);
         return;
     }
@@ -306,28 +414,55 @@ fn cli_supports_join_url(bin: &std::path::Path) -> bool {
 /// We deliberately use short timeouts: the desktop is on the launch path
 /// and we'd rather start with auto-discovery only than block the GUI for
 /// 30s if the user's offline.
+///
+/// Logs each failure mode to stderr (which lands in
+/// `~/Library/Logs/closedmesh/stderr.log` once launchd takes over the
+/// process). The previous implementation used `.ok()?` to swallow every
+/// error — when this silently returned `None` for a v0.1.16 user we had
+/// no way to tell whether DNS, TLS, the HTTP fetch, or the JSON decode
+/// was the problem, and the user's plist quietly fell back to a private
+/// mesh of one.
 #[cfg(target_os = "macos")]
 fn fetch_entry_token() -> Option<String> {
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(2))
-        .timeout_read(Duration::from_secs(4))
+        .timeout_connect(Duration::from_secs(3))
+        .timeout_read(Duration::from_secs(5))
         .build();
-    let payload: InvitePayload = agent
-        .get(ENTRY_STATUS_URL)
-        .call()
-        .ok()?
-        .into_json()
-        .ok()?;
-    payload
+    let resp = match agent.get(ENTRY_STATUS_URL).call() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[closedmesh] self-heal: GET {ENTRY_STATUS_URL} failed: {e}");
+            return None;
+        }
+    };
+    let payload: InvitePayload = match resp.into_json() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[closedmesh] self-heal: parse {ENTRY_STATUS_URL} body failed: {e}");
+            return None;
+        }
+    };
+    let token = payload
         .token
         .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.is_empty());
+    if token.is_none() {
+        eprintln!("[closedmesh] self-heal: {ENTRY_STATUS_URL} returned no `token` field");
+    }
+    token
 }
 
 /// Mirrors the plist `install.sh` writes today, but with the
 /// `ProgramArguments` array constructed from `join_args` so the same
 /// codepath handles `--join-url`, `--join <token>`, or no join flag at
 /// all (Nostr-only fallback).
+///
+/// `--publish` is required even when joining via `--join` / `--join-url`:
+/// without it, the local node is in private mode and won't broadcast
+/// itself on Nostr — meaning peers (and the public entry node behind
+/// `mesh.closedmesh.com`) can't discover it, and `closedmesh.com` shows
+/// "0 models" even though we successfully joined the canonical mesh.
+/// This was the headline bug in v0.1.16.
 #[cfg(target_os = "macos")]
 fn build_launchd_plist_xml(bin: &std::path::Path, join_args: &[String]) -> String {
     let home = dirs::home_dir()
@@ -339,6 +474,7 @@ fn build_launchd_plist_xml(bin: &std::path::Path, join_args: &[String]) -> Strin
         bin.display().to_string(),
         "serve".to_string(),
         "--auto".to_string(),
+        "--publish".to_string(),
         "--mesh-name".to_string(),
         "closedmesh".to_string(),
     ];

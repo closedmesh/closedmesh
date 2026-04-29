@@ -257,7 +257,9 @@ fn build_tray_menu_for_handle(
             Some(b) => format!("Model: {model} · {b}"),
             None => format!("Model: {model}"),
         };
-        let model_item = MenuItemBuilder::with_id("model", line).enabled(false).build(app)?;
+        let model_item = MenuItemBuilder::with_id("model", line)
+            .enabled(false)
+            .build(app)?;
         builder = builder.item(&model_item);
     }
 
@@ -277,8 +279,20 @@ fn build_tray_menu_for_handle(
             true,
             None::<&str>,
         )?)
-        .item(&MenuItem::with_id(app, MENU_RELOAD, "Reload", true, Some("CmdOrCtrl+R"))?)
-        .item(&MenuItem::with_id(app, MENU_ADMIN, "Open Admin Console", true, None::<&str>)?);
+        .item(&MenuItem::with_id(
+            app,
+            MENU_RELOAD,
+            "Reload",
+            true,
+            Some("CmdOrCtrl+R"),
+        )?)
+        .item(&MenuItem::with_id(
+            app,
+            MENU_ADMIN,
+            "Open Admin Console",
+            true,
+            None::<&str>,
+        )?);
 
     builder = builder.separator();
     if status.online {
@@ -299,7 +313,13 @@ fn build_tray_menu_for_handle(
         )?);
     }
     builder = builder
-        .item(&MenuItem::with_id(app, MENU_INVITE, "Copy Invite Token", true, None::<&str>)?)
+        .item(&MenuItem::with_id(
+            app,
+            MENU_INVITE,
+            "Copy Invite Token",
+            true,
+            None::<&str>,
+        )?)
         .item(&MenuItem::with_id(
             app,
             MENU_LOGS,
@@ -317,9 +337,7 @@ fn build_tray_menu_for_handle(
             version: Some(env!("CARGO_PKG_VERSION").into()),
             short_version: Some(env!("CARGO_PKG_VERSION").into()),
             authors: None,
-            comments: Some(
-                "Private LLM mesh on the compute you already own.".into(),
-            ),
+            comments: Some("Private LLM mesh on the compute you already own.".into()),
             copyright: Some("Apache-2.0 / MIT".into()),
             license: Some("Apache-2.0 / MIT".into()),
             website: Some("https://closedmesh.com".into()),
@@ -328,7 +346,13 @@ fn build_tray_menu_for_handle(
             icon: None,
         }),
     )?);
-    builder = builder.item(&MenuItem::with_id(app, MENU_QUIT, "Quit ClosedMesh", true, Some("CmdOrCtrl+Q"))?);
+    builder = builder.item(&MenuItem::with_id(
+        app,
+        MENU_QUIT,
+        "Quit ClosedMesh",
+        true,
+        Some("CmdOrCtrl+Q"),
+    )?);
 
     builder.build()
 }
@@ -581,8 +605,7 @@ fn webview_cache_dirs() -> Vec<std::path::PathBuf> {
         if let Some(cache) = std::env::var_os("XDG_CACHE_HOME")
             .map(std::path::PathBuf::from)
             .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| std::path::PathBuf::from(h).join(".cache"))
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache"))
             })
         {
             out.push(cache.join(bundle_id));
@@ -625,11 +648,17 @@ fn open_url(_app: &AppHandle, url: &str) {
 fn open_path(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(path).spawn().map(|_| ())
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
     }
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open").arg(path).spawn().map(|_| ())
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
     }
     #[cfg(target_os = "windows")]
     {
@@ -649,7 +678,10 @@ fn show_toast(app: &AppHandle, title: &str, body: &str) {
         let _ = window.show();
         let _ = window.set_focus();
         let combined = format!("{title}\n\n{body}");
-        let escaped = combined.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
+        let escaped = combined
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'")
+            .replace('\n', "\\n");
         let _ = window.eval(&format!("window.alert('{}')", escaped));
     }
 }

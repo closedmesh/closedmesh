@@ -240,27 +240,97 @@ install_from_local_build() {
     return 1
 }
 
+# cli_supports_join_url — does the just-installed binary understand the
+# `--join-url` flag? We grep `serve --help` (and the fuller
+# `serve --help-advanced` because clap-derive sometimes hides advanced
+# flags from the short help). Older releases (pre-v0.65.0) crash on
+# launch with `error: unexpected argument '--join-url'`, so on those
+# we have to use a literal `--join <token>` instead.
+cli_supports_join_url() {
+    local bin="$1"
+    "$bin" serve --help 2>&1 | grep -q -- '--join-url' && return 0
+    "$bin" serve --help-advanced 2>&1 | grep -q -- '--join-url' && return 0
+    return 1
+}
+
+# fetch_entry_token — pull a fresh invite token from the canonical
+# entry node's HTTP API. Used as a fallback when the installed binary
+# doesn't speak `--join-url`. Returns empty on any failure; the caller
+# treats that as "skip the --join arg, fall back to Nostr auto-discovery".
+fetch_entry_token() {
+    curl -fsSL --max-time 6 https://mesh.closedmesh.com/api/status 2>/dev/null \
+        | sed -n 's/.*"token":"\([^"]*\)".*/\1/p' \
+        | head -1
+}
+
+# build_join_args — emit either `--join-url <URL>` or `--join <TOKEN>`
+# (or nothing) into the array variable named by $1. Bash 3-compatible
+# (macOS still ships /bin/bash 3.2): we just append to a global array.
+JOIN_ARGS=()
+build_join_args() {
+    local bin="$1"
+    JOIN_ARGS=()
+    if cli_supports_join_url "$bin"; then
+        JOIN_ARGS=( "--join-url" "https://mesh.closedmesh.com/api/status" )
+        info "CLI supports --join-url; embedding it in the service unit."
+        return
+    fi
+    local token
+    token="$(fetch_entry_token)"
+    if [[ -n "$token" ]]; then
+        JOIN_ARGS=( "--join" "$token" )
+        info "Older CLI without --join-url; embedded a fresh invite token."
+        return
+    fi
+    warn "Could not embed a join arg (older CLI, entry node unreachable)."
+    warn "Service will fall back to Nostr auto-discovery."
+}
+
 write_launchd_plist() {
     mkdir -p "$LAUNCHD_DIR" "$LOG_DIR_DARWIN" "$DATA_DIR"
-    # `--auto --mesh-name closedmesh` makes this node discover and join the
-    # ClosedMesh public mesh on Nostr (the named mesh "closedmesh", whose
-    # entry point is published from our infrastructure). Without `--auto`
-    # the runtime would never find the mesh; without `--mesh-name closedmesh`
-    # it would land in the unnamed community pool of strangers' nodes
-    # instead of our mesh.
+    # Args, in order:
+    #   serve --auto --publish --mesh-name closedmesh
+    #     <--join-url URL> | <--join TOKEN> | (nothing — Nostr fallback)
+    #     --headless
     #
-    # `--join-url https://mesh.closedmesh.com/api/status` is the bootstrap
-    # pointer to the canonical entry node. The runtime fetches the URL on
-    # startup, pulls the entry node's current invite token, and treats it
-    # as `--join <token>` — guaranteeing every fresh install lands in the
-    # same mesh as everyone else, even if Nostr discovery is slow or the
-    # local node's listing happens to outrank the entry's. The entry's
-    # token can rotate on every restart of the entry container without
-    # invalidating any installed plist; only the URL is stable.
+    # `--auto` discovers, `--publish` advertises this node on Nostr so
+    # peers + the public entry node behind mesh.closedmesh.com can find
+    # it (without --publish closedmesh.com shows "0 models" even when
+    # joined — see desktop/src/mesh.rs). `--mesh-name closedmesh`
+    # disambiguates from the unnamed community pool.
+    #
+    # `--join-url` is the bootstrap pointer to the canonical entry node:
+    # on startup the runtime re-fetches the URL, pulls the entry's
+    # current invite token, and treats it as `--join <token>`. So an
+    # entry-node restart that rotates its keys doesn't permanently
+    # strand existing installs. We only embed `--join-url` when the
+    # installed CLI actually understands it (closedmesh-llm v0.65.0+);
+    # older CLIs would crashloop. For older CLIs we embed a literal
+    # `--join <token>` fetched at install-time instead.
     #
     # `--headless` keeps the embedded web console on its loopback port
-    # but turns off the TTY UI — matters because launchd runs the agent
-    # without a real terminal.
+    # but turns off the TTY UI (launchd has no real terminal).
+    build_join_args "$INSTALL_DIR/closedmesh"
+    local args_xml=""
+    args_xml+="        <string>${INSTALL_DIR}/closedmesh</string>
+"
+    args_xml+="        <string>serve</string>
+"
+    args_xml+="        <string>--auto</string>
+"
+    args_xml+="        <string>--publish</string>
+"
+    args_xml+="        <string>--mesh-name</string>
+"
+    args_xml+="        <string>closedmesh</string>
+"
+    local a
+    for a in "${JOIN_ARGS[@]}"; do
+        args_xml+="        <string>${a}</string>
+"
+    done
+    args_xml+="        <string>--headless</string>"
+
     cat >"$LAUNCHD_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -270,14 +340,7 @@ write_launchd_plist() {
     <string>${SERVICE_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${INSTALL_DIR}/closedmesh</string>
-        <string>serve</string>
-        <string>--auto</string>
-        <string>--mesh-name</string>
-        <string>closedmesh</string>
-        <string>--join-url</string>
-        <string>https://mesh.closedmesh.com/api/status</string>
-        <string>--headless</string>
+${args_xml}
     </array>
     <key>WorkingDirectory</key>
     <string>${HOME}</string>
@@ -318,6 +381,14 @@ write_systemd_user_unit() {
     fi
 
     mkdir -p "$SYSTEMD_USER_DIR" "$LOG_DIR_LINUX" "$DATA_DIR"
+    build_join_args "$INSTALL_DIR/closedmesh"
+    local exec_join=""
+    local a
+    for a in "${JOIN_ARGS[@]}"; do
+        # systemd ExecStart is a single line; quote nothing but rely on
+        # the absence of spaces in tokens / URLs we control.
+        exec_join+=" ${a}"
+    done
     cat >"$SYSTEMD_UNIT" <<UNIT
 [Unit]
 Description=ClosedMesh — peer-to-peer LLM mesh node
@@ -326,7 +397,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/closedmesh serve --auto --mesh-name closedmesh --join-url https://mesh.closedmesh.com/api/status --headless
+ExecStart=${INSTALL_DIR}/closedmesh serve --auto --publish --mesh-name closedmesh${exec_join} --headless
 WorkingDirectory=${HOME}
 Restart=on-failure
 RestartSec=5
