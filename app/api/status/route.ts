@@ -82,6 +82,11 @@ type RuntimePeer = {
   capability?: RuntimeCapability;
 };
 
+type RuntimeGpu = {
+  name?: string;
+  vram_bytes?: number;
+};
+
 type RuntimeStatus = {
   node_id?: string;
   is_host?: boolean;
@@ -89,9 +94,12 @@ type RuntimeStatus = {
   node_state?: string;
   my_hostname?: string | null;
   my_vram_gb?: number;
+  my_is_soc?: boolean;
   serving_models?: string[];
   hosted_models?: string[];
   capability?: RuntimeCapability;
+  /** rc2 and earlier emit GPU info here rather than inside `capability`. */
+  gpus?: RuntimeGpu[];
   peers?: RuntimePeer[];
 };
 
@@ -103,6 +111,53 @@ function summarizeCapability(cap: RuntimeCapability | undefined): NodeCapability
     vramGb: Math.round(((cap?.vram_total_mb ?? 0) / 1024) * 10) / 10,
     loadedModels: cap?.loaded_models ?? [],
   };
+}
+
+/**
+ * rc2 and earlier don't emit a top-level `capability` object for the local
+ * node — that field is only populated on peer entries. Instead the runtime
+ * exposes `gpus[]`, `my_vram_gb`, and `my_is_soc`. Synthesize a
+ * RuntimeCapability from those fields so the rest of the pipeline sees
+ * consistent data regardless of which runtime version is running locally.
+ */
+function inferLocalCapability(rt: RuntimeStatus): RuntimeCapability {
+  if (rt.capability) return rt.capability;
+
+  const gpuName = (rt.gpus?.[0]?.name ?? "").toLowerCase();
+  const isSoc = rt.my_is_soc ?? false;
+
+  let backend = "cpu";
+  let vendor = "none";
+  let computeClass = "lo";
+
+  if (isSoc || gpuName.includes("apple") || gpuName.includes("m1") || gpuName.includes("m2") || gpuName.includes("m3") || gpuName.includes("m4")) {
+    backend = "metal";
+    vendor = "apple";
+    computeClass = "hi";
+  } else if (gpuName.includes("nvidia") || gpuName.includes("geforce") || gpuName.includes("rtx") || gpuName.includes("gtx") || gpuName.includes("tesla") || gpuName.includes("a100") || gpuName.includes("h100")) {
+    backend = "cuda";
+    vendor = "nvidia";
+    computeClass = "hi";
+  } else if (gpuName.includes("amd") || gpuName.includes("radeon") || gpuName.includes("rx ")) {
+    backend = "rocm";
+    vendor = "amd";
+    computeClass = "mid";
+  } else if (gpuName.includes("intel") || gpuName.includes("arc")) {
+    backend = "vulkan";
+    vendor = "intel";
+    computeClass = "mid";
+  }
+
+  // my_vram_gb is already in GB — convert to MB for summarizeCapability.
+  const vram_total_mb = Math.round((rt.my_vram_gb ?? 0) * 1024);
+
+  // Treat serving + hosted models as "loaded" for the local node.
+  const loaded_models = [
+    ...(rt.serving_models ?? []),
+    ...(rt.hosted_models ?? []),
+  ].filter((m, i, a) => a.indexOf(m) === i);
+
+  return { backend, vendor, compute_class: computeClass, vram_total_mb, loaded_models };
 }
 
 async function fetchModels(): Promise<string[]> {
@@ -147,7 +202,7 @@ function buildNodes(rt: RuntimeStatus): NodeSummary[] {
       ...(rt.serving_models ?? []),
       ...(rt.hosted_models ?? []),
     ].filter((m, i, arr) => arr.indexOf(m) === i),
-    capability: summarizeCapability(rt.capability),
+    capability: summarizeCapability(inferLocalCapability(rt)),
   });
   for (const peer of rt.peers ?? []) {
     nodes.push({

@@ -127,6 +127,10 @@ export default function DashboardPage() {
   const [readyCardModelId, setReadyCardModelId] = useState<string | null>(null);
   const prevLoadedHere = useRef<string[]>([]);
   const refreshTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Track when we first entered the "loading" state so the timer in
+  // ModelLoadingCard survives navigation away and back (remounting resets
+  // useState but a ref on the parent persists for the page's lifetime).
+  const loadingStartedAt = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -501,6 +505,12 @@ export default function DashboardPage() {
     }
   }, [loadedHere]);
 
+  // Reset the loading-start timestamp once a model comes up so if the
+  // runtime is bounced later the timer starts fresh.
+  useEffect(() => {
+    if (loadedHere.length > 0) loadingStartedAt.current = null;
+  }, [loadedHere]);
+
   // Drop the "ready" success banner the instant the service goes away.
   // Otherwise a user who hits Stop sharing within 12s of a model coming
   // up sees a green "serving this model" card co-existing with the
@@ -594,6 +604,11 @@ export default function DashboardPage() {
             loadedHere.length === 0 && (
               <ModelLoadingCard
                 startupModelId={startup?.[0]?.model ?? "unknown"}
+                startedAt={(() => {
+                  if (loadingStartedAt.current === null)
+                    loadingStartedAt.current = Date.now();
+                  return loadingStartedAt.current;
+                })()}
               />
             )}
 
@@ -1106,15 +1121,22 @@ function QuickStartCard({
  * Copy progresses with elapsed time so a 2-minute load on a heavy 8B
  * model doesn't look identical to a 5-second load on a 0.4B smoke test.
  */
-function ModelLoadingCard({ startupModelId }: { startupModelId: string }) {
-  const [elapsed, setElapsed] = useState(0);
+function ModelLoadingCard({
+  startupModelId,
+  startedAt,
+}: {
+  startupModelId: string;
+  startedAt: number;
+}) {
+  const [elapsed, setElapsed] = useState(() =>
+    Math.floor((Date.now() - startedAt) / 1000),
+  );
   useEffect(() => {
-    const start = Date.now();
     const id = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - start) / 1000));
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
     }, 500);
     return () => clearInterval(id);
-  }, [startupModelId]);
+  }, [startedAt]);
 
   let phaseLabel: string;
   let hint: string;
