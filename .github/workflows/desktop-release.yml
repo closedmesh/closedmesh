@@ -98,23 +98,18 @@ jobs:
             desktop/package-lock.json
             package-lock.json
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop -> target
-          # Bump this if you ever need to bust the cache (e.g. weird linker
-          # state after a Rust toolchain update).
-          prefix-key: 'desktop-v1'
-
-      # WebKitGTK + GTK + libsoup are the runtime deps for `wry` (Tauri's
-      # webview crate) on Linux. librsvg is needed by the .deb bundler for
-      # rendering the icon. libayatana-appindicator covers the system tray
-      # on GNOME / Ubuntu.
+      # Order matters: stage the Next.js controller BEFORE we let
+      # Swatinem/rust-cache restore desktop/target/ to disk. Next.js
+      # standalone tracing currently falls back to "trace the whole
+      # project" because of dynamic fs/spawn calls in some control
+      # routes, and if a 300+ MB compiled Rust target dir is sitting in
+      # the workspace at trace time, all of it gets slurped into
+      # .next/standalone/ → ClosedMesh.app. That's exactly how the v0.1.12
+      # macOS DMG ballooned from 50 MB to 352 MB. Staging first keeps
+      # desktop/target/ off disk until after the Next build is done.
+      #
+      # Linux build deps live above the Rust setup too because they're
+      # apt-only (no Rust dep).
       - name: Install Linux build deps
         if: matrix.runner == 'ubuntu-22.04'
         run: |
@@ -159,6 +154,22 @@ jobs:
           fi
           ls -la "$path"
 
+      # Now safe to bring in Rust + the (potentially large) cargo cache:
+      # the controller bundle is already staged, so anything restored
+      # under desktop/target/ won't end up inside .next/standalone/.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop -> target
+          # Bump this if you ever need to bust the cache (e.g. weird linker
+          # state after a Rust toolchain update).
+          prefix-key: 'desktop-v1'
+
       - name: Install desktop npm deps
         working-directory: desktop
         run: npm ci --no-fund --no-audit
@@ -166,6 +177,27 @@ jobs:
       - name: Generate platform icons
         working-directory: desktop
         run: npm run icons
+
+      # Belt + suspenders: if anything still leaked into the staged
+      # controller bundle, fail the build loudly here rather than ship a
+      # 350 MB DMG. The 0.1.11 macOS bundle was 40 MB; 0.1.12 was 868 MB
+      # (300 MB of stray Rust target artifacts). 200 MB is well above any
+      # legitimate growth path and well below the regression.
+      - name: Guard staged controller size (<= 200 MB)
+        run: |
+          set -euo pipefail
+          stage="desktop/sidecar/controller"
+          if [[ ! -d "$stage" ]]; then
+            echo "::error::expected $stage to exist after staging"; exit 1
+          fi
+          size_kb=$(du -sk "$stage" | awk '{print $1}')
+          size_mb=$(( size_kb / 1024 ))
+          echo "Staged controller size: ${size_mb} MB"
+          if (( size_mb > 200 )); then
+            echo "::error::staged controller is ${size_mb} MB, refusing (NFT regression?)"
+            du -sh "$stage"/* | sort -h | tail -20
+            exit 1
+          fi
 
       - name: Build & upload bundles
         uses: tauri-apps/tauri-action@v0
