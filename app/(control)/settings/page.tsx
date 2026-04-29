@@ -11,6 +11,7 @@ type Settings = {
   backend: Backend;
   publicOrigins: string[];
   inviteOnly: boolean;
+  keepMeshRunningAfterQuit: boolean;
 };
 
 type LocalModel = { id: string };
@@ -162,6 +163,25 @@ export default function SettingsPage() {
                 {autostartError}
               </div>
             )}
+          </Card>
+
+          <Card
+            eyebrow="Quitting"
+            title="Stay in the mesh after I quit ClosedMesh"
+            hint="On: the runtime keeps serving in the background after you close the app — your machine still answers chat requests for the mesh. Off (default): quitting actually leaves the mesh, like CMD+Q implies."
+          >
+            <div className="flex items-center justify-between gap-4">
+              <Toggle
+                checked={settings?.keepMeshRunningAfterQuit ?? false}
+                disabled={!settings}
+                onChange={(v) => update("keepMeshRunningAfterQuit", v)}
+              />
+              <span className="text-[12px] text-[var(--fg-muted)]">
+                {settings?.keepMeshRunningAfterQuit
+                  ? "On — quitting leaves the runtime up"
+                  : "Off — quitting stops the runtime"}
+              </span>
+            </div>
           </Card>
 
           <Card

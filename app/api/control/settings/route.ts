@@ -29,6 +29,15 @@ export type ControllerSettings = {
   backend: Backend;
   publicOrigins: string[];
   inviteOnly: boolean;
+  /**
+   * When true, quitting the desktop app leaves the runtime daemon running
+   * in the background (still serving the public mesh). When false (the
+   * default), the desktop app stops the launchd-supervised service on
+   * quit so closing the app actually leaves the mesh — matching what
+   * users expect from CMD+Q. The desktop shell reads this file directly
+   * on quit; nothing in the controller reads it.
+   */
+  keepMeshRunningAfterQuit: boolean;
 };
 
 const DEFAULTS: ControllerSettings = {
@@ -36,6 +45,7 @@ const DEFAULTS: ControllerSettings = {
   backend: "auto",
   publicOrigins: ["https://closedmesh.com"],
   inviteOnly: false,
+  keepMeshRunningAfterQuit: false,
 };
 
 const SETTINGS_PATH = path.join(
@@ -67,6 +77,10 @@ async function readSettings(): Promise<ControllerSettings> {
         typeof parsed.inviteOnly === "boolean"
           ? parsed.inviteOnly
           : DEFAULTS.inviteOnly,
+      keepMeshRunningAfterQuit:
+        typeof parsed.keepMeshRunningAfterQuit === "boolean"
+          ? parsed.keepMeshRunningAfterQuit
+          : DEFAULTS.keepMeshRunningAfterQuit,
     };
   } catch {
     return { ...DEFAULTS };
@@ -132,6 +146,10 @@ export async function POST(req: Request) {
       typeof patch.inviteOnly === "boolean"
         ? patch.inviteOnly
         : current.inviteOnly,
+    keepMeshRunningAfterQuit:
+      typeof patch.keepMeshRunningAfterQuit === "boolean"
+        ? patch.keepMeshRunningAfterQuit
+        : current.keepMeshRunningAfterQuit,
   };
   await writeSettings(next);
   return NextResponse.json({ ok: true, settings: next });

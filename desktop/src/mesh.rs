@@ -202,6 +202,35 @@ pub fn stop_service() {
     run_cli(&["service", "stop"]);
 }
 
+/// Reads the `keepMeshRunningAfterQuit` toggle from the controller's
+/// settings file. The Settings page writes to this same JSON, so the
+/// preference is shared without any IPC. Returns `false` (the default
+/// — i.e. "stop the runtime on quit") when the file is missing,
+/// unparseable, or the field is absent. We deliberately don't depend
+/// on `serde_json` for this one bool: a regex is robust enough and
+/// keeps the desktop binary lean.
+pub fn keep_running_after_quit() -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let path = home.join(".closedmesh").join("controller-settings.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    // Tolerant scan — handles `"keepMeshRunningAfterQuit":true` and
+    // `"keepMeshRunningAfterQuit": true` and trailing comma variants.
+    // serde_json would be 30 LoC less but pulls in another dep.
+    let needle = "\"keepMeshRunningAfterQuit\"";
+    let Some(idx) = raw.find(needle) else {
+        return false;
+    };
+    let after = &raw[idx + needle.len()..];
+    // Skip the colon + whitespace, then look for the literal `true` /
+    // `false` token.
+    let trimmed = after.trim_start_matches([':', ' ', '\t', '\n', '\r']);
+    trimmed.starts_with("true")
+}
+
 /// Returns the local node's join token — the value a teammate pastes on
 /// their machine to join this mesh. The runtime mints the token at startup
 /// and publishes it on the admin status endpoint; there is intentionally no

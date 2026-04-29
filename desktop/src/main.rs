@@ -150,16 +150,36 @@ fn main() {
         .expect("failed to build ClosedMesh desktop")
         .run(move |_app, event| {
             match event {
-                // Keep the process alive even when no windows are visible —
-                // again, the tray is the primary affordance.
-                RunEvent::ExitRequested { api, .. } => {
-                    api.prevent_exit();
-                }
-                // Final shutdown: kill the bundled controller. macOS will
-                // reap orphans for us, but explicit teardown means the
-                // controller's port is released before relaunch and we
-                // don't accumulate zombie processes during dev.
+                // We honor every ExitRequested now — Cmd+Q on macOS, the
+                // tray's "Quit ClosedMesh" item, and `app.exit(0)` all
+                // route here, and they all mean the user is done. The
+                // tray-only "click X to hide" pattern is enforced by the
+                // window-level CloseRequested handler above (which calls
+                // `prevent_close()`), so getting here genuinely means
+                // exit, not "user closed the window".
+                //
+                // Older builds called `prevent_exit()` unconditionally,
+                // which made Cmd+Q a silent no-op *and* meant the tray's
+                // own Quit item didn't really quit either — the GUI
+                // disappeared but launchd kept the runtime alive, so
+                // closedmesh.com would still report the node online
+                // serving inference long after the user thought they'd
+                // left the mesh. This block is the load-bearing fix.
                 RunEvent::Exit => {
+                    // Stop the runtime first. If the user opted into
+                    // "Stay in mesh after I quit" on the Settings page,
+                    // skip this and the launchd-supervised daemon keeps
+                    // serving — that's the explicit "headless always-on
+                    // node" mode for users who want it.
+                    if !mesh::keep_running_after_quit() {
+                        mesh::stop_service();
+                    }
+
+                    // Then tear down the bundled controller. macOS will
+                    // reap orphans for us, but explicit teardown means
+                    // the controller's port is released before relaunch
+                    // and we don't accumulate zombie processes during
+                    // dev.
                     if let Ok(mut guard) = exit_state.sidecar.lock() {
                         if let Some(sc) = guard.take() {
                             sc.kill();
