@@ -249,6 +249,15 @@ write_launchd_plist() {
     # it would land in the unnamed community pool of strangers' nodes
     # instead of our mesh.
     #
+    # `--join-url https://mesh.closedmesh.com/api/status` is the bootstrap
+    # pointer to the canonical entry node. The runtime fetches the URL on
+    # startup, pulls the entry node's current invite token, and treats it
+    # as `--join <token>` — guaranteeing every fresh install lands in the
+    # same mesh as everyone else, even if Nostr discovery is slow or the
+    # local node's listing happens to outrank the entry's. The entry's
+    # token can rotate on every restart of the entry container without
+    # invalidating any installed plist; only the URL is stable.
+    #
     # `--headless` keeps the embedded web console on its loopback port
     # but turns off the TTY UI — matters because launchd runs the agent
     # without a real terminal.
@@ -266,6 +275,8 @@ write_launchd_plist() {
         <string>--auto</string>
         <string>--mesh-name</string>
         <string>closedmesh</string>
+        <string>--join-url</string>
+        <string>https://mesh.closedmesh.com/api/status</string>
         <string>--headless</string>
     </array>
     <key>WorkingDirectory</key>
@@ -315,7 +326,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/closedmesh serve --auto --mesh-name closedmesh --headless
+ExecStart=${INSTALL_DIR}/closedmesh serve --auto --mesh-name closedmesh --join-url https://mesh.closedmesh.com/api/status --headless
 WorkingDirectory=${HOME}
 Restart=on-failure
 RestartSec=5

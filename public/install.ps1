@@ -153,11 +153,15 @@ function Install-ScheduledTaskUnit {
     # installer idempotent.
     schtasks.exe /Delete /TN $TaskName /F 2>$null | Out-Null
 
-    # `serve --auto` discovers and joins the public ClosedMesh on Nostr
-    # (or becomes a watchdog publisher if needed). Don't pass --private-only
+    # `serve --auto --mesh-name closedmesh --join-url ...` discovers and
+    # joins the public ClosedMesh through the canonical entry node at
+    # mesh.closedmesh.com. The runtime fetches the entry's invite token
+    # from --join-url on startup so this scheduled task never has to embed
+    # a token that rotates whenever the entry node restarts. Don't pass
+    # --private-only
     # here — that would hide the node from other peers and from the public
     # entry that closedmesh.com proxies through.
-    $action    = New-ScheduledTaskAction    -Execute $bin -Argument 'serve --auto --headless' -WorkingDirectory $env:USERPROFILE
+    $action    = New-ScheduledTaskAction    -Execute $bin -Argument 'serve --auto --mesh-name closedmesh --join-url https://mesh.closedmesh.com/api/status --headless' -WorkingDirectory $env:USERPROFILE
     $trigger   = New-ScheduledTaskTrigger   -AtLogOn -User $env:USERNAME
     $settings  = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
