@@ -734,19 +734,6 @@ pub fn keep_running_after_quit() -> bool {
     trimmed.starts_with("true")
 }
 
-/// Returns a path to reveal in the OS file browser when the user picks
-/// "Show Logs" from the tray. The runtime + installer + sidecar all
-/// write logs to the platform-specific dir returned by
-/// `default_log_dir()`; this just additionally filters on existence so
-/// we don't open an empty Finder window pre-first-launch.
-pub fn log_dir() -> Option<PathBuf> {
-    let candidate = default_log_dir()?;
-    if candidate.exists() {
-        Some(candidate)
-    } else {
-        None
-    }
-}
 
 // ---------- Runtime auto-install ----------------------------------------
 

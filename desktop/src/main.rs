@@ -8,22 +8,17 @@ mod sidecar;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tauri::menu::{Menu, MenuBuilder, MenuEvent, MenuItem, MenuItemBuilder, PredefinedMenuItem};
+use tauri::menu::{Menu, MenuBuilder, MenuEvent, MenuItem, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 use crate::mesh::MeshStatus;
 use crate::sidecar::Sidecar;
 
-/// IDs for the dynamic menu items we have to rebuild every poll cycle
-/// (because the Start/Stop label flips with online state).
 const MENU_OPEN: &str = "open_app";
 const MENU_OPEN_CHAT: &str = "open_chat";
-const MENU_RELOAD: &str = "reload";
-const MENU_ADMIN: &str = "open_admin";
 const MENU_START: &str = "start_service";
 const MENU_STOP: &str = "stop_service";
-const MENU_LOGS: &str = "show_logs";
 const MENU_QUIT: &str = "quit";
 
 const MAIN_WINDOW: &str = "main";
@@ -262,12 +257,12 @@ fn build_tray_menu_for_handle(
         builder = builder.item(&model_item);
     }
 
-    builder = builder.separator();
     builder = builder
+        .separator()
         .item(&MenuItem::with_id(
             app,
             MENU_OPEN,
-            "Show ClosedMesh",
+            "Open ClosedMesh",
             true,
             Some("CmdOrCtrl+O"),
         )?)
@@ -278,22 +273,8 @@ fn build_tray_menu_for_handle(
             true,
             None::<&str>,
         )?)
-        .item(&MenuItem::with_id(
-            app,
-            MENU_RELOAD,
-            "Reload",
-            true,
-            Some("CmdOrCtrl+R"),
-        )?)
-        .item(&MenuItem::with_id(
-            app,
-            MENU_ADMIN,
-            "Open Admin Console",
-            true,
-            None::<&str>,
-        )?);
+        .separator();
 
-    builder = builder.separator();
     if status.online {
         builder = builder.item(&MenuItem::with_id(
             app,
@@ -311,41 +292,17 @@ fn build_tray_menu_for_handle(
             None::<&str>,
         )?);
     }
-    builder = builder.item(&MenuItem::with_id(
-        app,
-        MENU_LOGS,
-        "Show Logs in File Manager",
-        true,
-        None::<&str>,
-    )?);
 
-    builder = builder.separator();
-    builder = builder.item(&PredefinedMenuItem::about(
-        app,
-        Some("About ClosedMesh"),
-        Some(tauri::menu::AboutMetadata {
-            name: Some("ClosedMesh".into()),
-            version: Some(env!("CARGO_PKG_VERSION").into()),
-            short_version: Some(env!("CARGO_PKG_VERSION").into()),
-            authors: None,
-            comments: Some("Private LLM mesh on the compute you already own.".into()),
-            copyright: Some("Apache-2.0 / MIT".into()),
-            license: Some("Apache-2.0 / MIT".into()),
-            website: Some("https://closedmesh.com".into()),
-            website_label: Some("closedmesh.com".into()),
-            credits: None,
-            icon: None,
-        }),
-    )?);
-    builder = builder.item(&MenuItem::with_id(
-        app,
-        MENU_QUIT,
-        "Quit ClosedMesh",
-        true,
-        Some("CmdOrCtrl+Q"),
-    )?);
-
-    builder.build()
+    builder
+        .separator()
+        .item(&MenuItem::with_id(
+            app,
+            MENU_QUIT,
+            "Quit ClosedMesh",
+            true,
+            Some("CmdOrCtrl+Q"),
+        )?)
+        .build()
 }
 
 fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
@@ -373,36 +330,11 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
                 let _ = window.eval(&format!("window.location.replace('{}')", escaped));
             }
         }
-        MENU_RELOAD => {
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                // Re-resolve the URL so flipping `npm run dev` on/off is
-                // picked up without restarting the .app. We navigate via
-                // `window.location.replace` (rather than Tauri's
-                // `webview.navigate`) because it works the same way across
-                // every backing webview engine and doesn't require a
-                // mutable handle.
-                let url = control_entry_url(&mesh::preferred_url());
-                let escaped = url.replace('\\', "\\\\").replace('\'', "\\'");
-                let _ = window.eval(&format!("window.location.replace('{}')", escaped));
-            }
-        }
-        MENU_ADMIN => {
-            // Admin console always lives at :3131 — the runtime's own
-            // topology / request inspector page.
-            open_url(app, "http://127.0.0.1:3131");
-        }
         MENU_START => {
             std::thread::spawn(|| mesh::start_service());
         }
         MENU_STOP => {
             std::thread::spawn(|| mesh::stop_service());
-        }
-        MENU_LOGS => {
-            if let Some(path) = mesh::log_dir() {
-                let _ = open_path(&path);
-            } else {
-                open_url(app, "http://127.0.0.1:3131");
-            }
         }
         MENU_QUIT => {
             app.exit(0);
@@ -594,46 +526,4 @@ fn webview_cache_dirs() -> Vec<std::path::PathBuf> {
     out
 }
 
-fn open_url(_app: &AppHandle, url: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(url).spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // `cmd /C start` is the canonical way to open a URL in the default
-        // browser without spawning a visible cmd window.
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn();
-    }
-}
-
-fn open_path(path: &std::path::Path) -> std::io::Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(path)
-            .spawn()
-            .map(|_| ())
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(path)
-            .spawn()
-            .map(|_| ())
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg(path)
-            .spawn()
-            .map(|_| ())
-    }
-}
 
