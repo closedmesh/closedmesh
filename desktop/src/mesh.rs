@@ -748,14 +748,16 @@ const RUNTIME_RELEASE_BASE: &str =
 
 /// Return `true` if the installed runtime binary is new enough to support
 /// all the flags we emit in the launchd plist (`--relay`, `--join`,
-/// `--headless`, `--publish`). The minimum acceptable version is
-/// `0.65.0-rc2`; anything older (rc1, 0.64.x, …) gets replaced.
+/// `--headless`, `--publish`) AND has the 30-second iroh relay timeout
+/// required for Apple Silicon machines on Tailscale/CGNAT to be reachable
+/// from the cloud entry node. The minimum acceptable version is `0.65.0`
+/// (full release — rc1 and rc2 both had a 5s relay timeout that silently
+/// produced relay-less iroh invites, leaving home-network nodes invisible
+/// to the entry node and the production website).
 ///
 /// We call `closedmesh --version`, parse the `major.minor.patch` triplet
 /// from the first token that looks like a semantic version, and compare
-/// against the threshold (0, 65, 0). The pre-release suffix is handled
-/// as a special case: among 0.65.0 pre-releases only rc2 and above are
-/// accepted (rc1 lacked `--relay` support).
+/// against the threshold (0, 65, 0). Pre-release suffixes are rejected.
 ///
 /// Any binary that refuses to run, produces no version output, or has an
 /// unparseable version string is conservatively rejected so it gets
@@ -785,17 +787,17 @@ fn runtime_meets_minimum(bin: &std::path::Path) -> bool {
     let (maj, min, patch, pre) = parse_semver(version_token);
 
     // Accept any version that is strictly greater than 0.65.0, or is
-    // exactly 0.65.0 without a pre-release suffix, or is exactly
-    // 0.65.0-rc2.
+    // exactly 0.65.0 without a pre-release suffix. rc1 and rc2 both had
+    // a 5-second iroh relay timeout that was too short for Apple Silicon
+    // machines on Tailscale/CGNAT — they publish relay-less iroh invites
+    // and are unreachable from the cloud entry node. The full 0.65.0
+    // release bumps this to 30s and fixes the "Mesh online · 0 models"
+    // symptom for home-network users.
     if (maj, min, patch) > (0, 65, 0) {
         return true;
     }
     if (maj, min, patch) == (0, 65, 0) {
-        return match pre.as_deref() {
-            None => true,            // 0.65.0 full release
-            Some("rc2") => true,    // exact minimum we need
-            Some(_) => false,       // rc1 or any other pre-release
-        };
+        return pre.is_none(); // only the full release, not rc1/rc2
     }
     // (maj, min, patch) < (0, 65, 0) — definitely too old
     false
