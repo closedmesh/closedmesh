@@ -72,6 +72,18 @@ fn sidecar_node_filename_candidates() -> [&'static str; 2] {
     }
 }
 
+/// Bearer token baked in at compile time.
+///
+/// In CI release builds the pipeline sets `CLOSEDMESH_RUNTIME_TOKEN` as a
+/// build secret so the value is embedded in the binary rather than relying
+/// on the user's shell environment. This is what lets the bundled sidecar
+/// authenticate against the public mesh entry node (`mesh.closedmesh.com`)
+/// out of the box — the token is never in source, only in CI secrets.
+///
+/// In local dev builds (no env var at compile time) this is `None` and the
+/// sidecar talks to the local runtime at 127.0.0.1:9337 without auth.
+const BAKED_RUNTIME_TOKEN: Option<&str> = option_env!("CLOSEDMESH_RUNTIME_TOKEN");
+
 /// Env vars that select which runtime the bundled Next.js controller
 /// proxies to. We forward them from the desktop process to the Node
 /// sidecar so a release build can ship pointed at the public mesh
@@ -289,6 +301,14 @@ impl Sidecar {
                 if !value.is_empty() {
                     command.env(key, value);
                 }
+            }
+        }
+
+        // The baked-in token wins over whatever the parent shell has set.
+        // In dev builds this is None so local-runtime auth is never forced.
+        if let Some(token) = BAKED_RUNTIME_TOKEN {
+            if !token.is_empty() {
+                command.env("CLOSEDMESH_RUNTIME_TOKEN", token);
             }
         }
 
