@@ -379,7 +379,7 @@ const ENTRY_STATUS_URL: &str = "https://mesh.closedmesh.com/api/status";
 /// Update this constant whenever the entry node's identity changes (i.e. the
 /// Lightsail instance or Docker volume is rebuilt from scratch).
 #[cfg(target_os = "macos")]
-const FALLBACK_JOIN_TOKEN: &str = "eyJpZCI6IjczNGVkYjJhMWRhMjQ0OWMyZWIyNGQyMzBjNDZkMDE0YTRkOWY2MmVmY2JkYjJlYmRmNzlmM2NiMGMyNzFhZmUiLCJhZGRycyI6W3siUmVsYXkiOiJodHRwczovL3VzZTEtMS5yZWxheS5uMC5pcm9oLWNhbmFyeS5pcm9oLmxpbmsuLyJ9LHsiSXAiOiIzLjIxMC4zMC41ODo1MTgyMCJ9LHsiSXAiOiIxNzIuMTcuMC4xOjUxODIwIn0seyJJcCI6IjE3Mi4yNi4zLjkxOjUxODIwIn0seyJJcCI6IlsyNjAwOjFmMTg6NTI2Zjo0OTAwOjY4NjU6YzY4NzoxYTc0OjRiOWJdOjU2NDA0In1dfQ";
+const FALLBACK_JOIN_TOKEN: &str = "eyJpZCI6IjI1ZTA0NjhkNDJkNDE2Yzc4ZGYzYWIxM2Q5ZjE0ZWVhZTBhMjg1OTNmNzFkYzAxYzBiNzAyMjU2M2RjODIzOGMiLCJhZGRycyI6W3siUmVsYXkiOiJodHRwczovL3VzZTEtMS5yZWxheS5uMC5pcm9oLWNhbmFyeS5pcm9oLmxpbmsuLyJ9LHsiSXAiOiIzLjIxMC4zMC41ODowIn0seyJJcCI6IjE3Mi4xNy4wLjE6NDIxNDAifSx7IklwIjoiMTcyLjI2LjMuOTE6NDIxNDAifSx7IklwIjoiWzI2MDA6MWYxODo1MjZmOjQ5MDA6Njg2NTpjNjg3OjFhNzQ6NGI5Ql06MzU2NTYifV19";
 
 /// Public Iroh relays we explicitly hand to the runtime via `--relay`.
 ///
