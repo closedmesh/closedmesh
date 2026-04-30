@@ -458,29 +458,6 @@ export default function DashboardPage() {
     }
   }, [update]);
 
-  const copyInvite = useCallback(async () => {
-    setBusy("invite");
-    setToast(null);
-    try {
-      const res = await fetch("/api/control/invite", { method: "POST" });
-      const data = (await res.json()) as {
-        ok: boolean;
-        token?: string;
-        message?: string;
-      };
-      if (data.ok && data.token) {
-        await navigator.clipboard.writeText(data.token);
-        setToast("Invite link copied. Paste it to a teammate to add their machine.");
-      } else {
-        setToast(data.message ?? "Couldn't create an invite. Try again in a moment.");
-      }
-    } catch (e) {
-      setToast(e instanceof Error ? e.message : "request failed");
-    } finally {
-      setBusy(null);
-    }
-  }, []);
-
   const selfNode = mesh.nodes.find((n) => n.isSelf) ?? null;
   const peers = mesh.nodes.filter((n) => !n.isSelf);
   const totalVram = mesh.nodes.reduce(
@@ -647,7 +624,7 @@ export default function DashboardPage() {
               hint={
                 peers.length > 0
                   ? `${peers.length} teammate${peers.length === 1 ? "" : "s"} sharing capacity`
-                  : "you're alone — invite someone to join"
+                  : "you're the only one — share the app to grow the mesh"
               }
               href="/nodes"
             />
@@ -670,7 +647,6 @@ export default function DashboardPage() {
           <QuickActions
             running={running}
             busy={busy}
-            onCopyInvite={copyInvite}
             toast={toast}
           />
 
@@ -828,7 +804,6 @@ function ThisNodeCard({
   busy:
     | "start"
     | "stop"
-    | "invite"
     | "repair"
     | "quickstart"
     | "update"
@@ -1316,19 +1291,16 @@ function ModelReadyCard({
 function QuickActions({
   running,
   busy,
-  onCopyInvite,
   toast,
 }: {
   running: boolean;
   busy:
     | "start"
     | "stop"
-    | "invite"
     | "repair"
     | "quickstart"
     | "update"
     | null;
-  onCopyInvite: () => void;
   toast: string | null;
 }) {
   return (
@@ -1336,18 +1308,7 @@ function QuickActions({
       <div className="mb-3 text-[10px] uppercase tracking-[0.16em] text-[var(--fg-muted)]">
         What now?
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <ActionButton
-          onClick={onCopyInvite}
-          disabled={!running || busy !== null}
-          title={
-            running
-              ? "Copy a join link to share with a teammate"
-              : "Start sharing first"
-          }
-        >
-          {busy === "invite" ? "Creating…" : "Invite a teammate"}
-        </ActionButton>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         <ActionLink href="/chat">Open chat</ActionLink>
         <ActionLink href="/models">Browse models</ActionLink>
         <ActionLink href="/nodes">Add a remote machine</ActionLink>
