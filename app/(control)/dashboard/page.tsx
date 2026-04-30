@@ -112,7 +112,7 @@ export default function DashboardPage() {
   const mesh = useMeshStatus();
   const [control, setControl] = useState<ControlStatus | null>(null);
   const [busy, setBusy] = useState<
-    "start" | "stop" | "invite" | "repair" | "quickstart" | "update" | null
+    "start" | "stop" | "repair" | "quickstart" | "update" | null
   >(null);
   const [toast, setToast] = useState<string | null>(null);
   const [repair, setRepair] = useState<RepairResp | null>(null);
@@ -131,6 +131,10 @@ export default function DashboardPage() {
   // ModelLoadingCard survives navigation away and back (remounting resets
   // useState but a ref on the parent persists for the page's lifetime).
   const loadingStartedAt = useRef<number | null>(null);
+  // Guard so we only auto-trigger the quick-start download once per mount,
+  // even if conditions momentarily flip back (e.g. during the startup
+  // config refresh cycle).
+  const autoStartFired = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -215,6 +219,22 @@ export default function DashboardPage() {
       clearInterval(updateTick);
     };
   }, [refresh, refreshRepair, refreshStartup, refreshLocalModels, refreshUpdate]);
+
+  // Auto-trigger the quick-start download on first launch. We wait until
+  // both `startup` and `localModels` are non-null (i.e. the initial data
+  // fetches have settled) before acting, so we don't fire during the brief
+  // loading window where everything looks unconfigured. Once the download
+  // begins the `autoStartFired` guard prevents re-triggering.
+  useEffect(() => {
+    if (autoStartFired.current) return;
+    if (!recommendation) return;
+    if (startup === null || localModels === null) return;
+    if (startup.length > 0) return;
+    if (localModels.length > 0) return;
+    if (!control?.available || control.publicDeployment) return;
+    autoStartFired.current = true;
+    runQuickStart(recommendation);
+  }, [control, startup, localModels, recommendation, runQuickStart]);
 
   const runRepair = useCallback(async () => {
     setBusy("repair");
