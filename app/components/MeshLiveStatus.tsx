@@ -81,7 +81,9 @@ export function MeshLiveStatus({
           : "bg-red-400";
     const label =
       phase === "online"
-        ? `Mesh online · ${models.length} model${models.length === 1 ? "" : "s"}`
+        ? models.length > 0
+          ? `Mesh online · ${models.length} model${models.length === 1 ? "" : "s"}`
+          : "Mesh online"
         : phase === "loading"
           ? "Checking mesh…"
           : "Mesh unreachable";
