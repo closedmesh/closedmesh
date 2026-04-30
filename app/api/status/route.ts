@@ -226,12 +226,31 @@ export async function OPTIONS(req: Request) {
   return preflightResponse(req);
 }
 
+/**
+ * Collect all models that are actively being served across all nodes in the
+ * mesh. The entry node's /v1/models only lists models it can serve locally;
+ * when it runs in pure-client mode it returns an empty list even though peer
+ * workers are serving. Fall back to harvesting served models from the admin
+ * status payload so the public site always reflects real mesh capacity.
+ */
+function modelsFromRuntime(rt: RuntimeStatus | null, v1Models: string[]): string[] {
+  if (v1Models.length > 0) return v1Models;
+  if (!rt) return [];
+  const seen = new Set<string>();
+  for (const m of [...(rt.serving_models ?? []), ...(rt.hosted_models ?? [])]) seen.add(m);
+  for (const peer of rt.peers ?? []) {
+    for (const m of [...(peer.serving_models ?? []), ...(peer.hosted_models ?? [])]) seen.add(m);
+  }
+  return [...seen];
+}
+
 export async function GET(req: Request) {
   try {
-    const [models, runtime] = await Promise.all([
+    const [v1Models, runtime] = await Promise.all([
       fetchModels(),
       fetchRuntimeStatus(),
     ]);
+    const models = modelsFromRuntime(runtime, v1Models);
     const nodes = runtime ? buildNodes(runtime) : [];
     const nodeCount = nodes.length || 1;
     const status: Status = { online: true, nodeCount, models, nodes };
