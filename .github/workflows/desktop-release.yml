@@ -203,6 +203,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLOSEDMESH_RUNTIME_TOKEN: ${{ secrets.CLOSEDMESH_RUNTIME_TOKEN }}
         with:
           # Cargo workspace lives in desktop/, not the repo root.
           projectPath: desktop
