@@ -70,11 +70,28 @@ function backendColor(backend: string): string {
   return map[backend] ?? "text-[var(--fg-muted)] bg-[var(--bg-elev)] border-[var(--border)]";
 }
 
-function stateColor(state: string): { dot: string; label: string } {
+function stateColor(
+  state: string,
+  servingModelCount: number = 0,
+): { dot: string; label: string } {
   if (state === "serving") return { dot: "bg-emerald-400", label: "Serving" };
   if (state === "client") return { dot: "bg-sky-400", label: "Gateway" };
+  // Standby with a loaded model is effectively "Ready" — the node is online
+  // and able to serve, just not processing a request right this instant.
+  // Without this distinction every idle node looks the same as a barely-
+  // discovered one with no model loaded.
+  if (state === "standby" && servingModelCount > 0) {
+    return { dot: "bg-emerald-400", label: "Ready" };
+  }
   if (state === "standby") return { dot: "bg-yellow-400", label: "Standby" };
-  return { dot: "bg-[var(--fg-muted)]", label: state };
+  if (state === "loading") return { dot: "bg-amber-400", label: "Warming up" };
+  // Anything else (empty, "down", unknown) — fall back to a muted dot but
+  // show what state actually came back so we can debug rather than seeing
+  // a generic grey blob with no label.
+  return {
+    dot: "bg-[var(--fg-muted)]",
+    label: state || "Unknown",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -84,9 +101,9 @@ function stateColor(state: string): { dot: string; label: string } {
 function NodeCard({ node }: { node: MeshNode }) {
   const hostname = prettyHostname(node.hostname);
   const isEntryNode = node.hostname?.startsWith("ip-");
-  const { dot, label: stateLabel } = stateColor(node.state);
   const cap = node.capability;
   const isServing = node.servingModels.length > 0;
+  const { dot, label: stateLabel } = stateColor(node.state, node.servingModels.length);
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] p-5 flex flex-col gap-4">

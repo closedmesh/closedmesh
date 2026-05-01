@@ -824,25 +824,27 @@ function ThisNodeCard({
   const backend = cap ? BACKEND_LABEL[cap.backend] ?? cap.backend : null;
   const vram = cap?.vramGb ?? self?.vramGb ?? 0;
   const loaded = cap?.loadedModels ?? [];
-  const role = self?.role ?? "";
   const servingModels = self?.servingModels ?? [];
+  const meshState = self?.state ?? "";
 
-  // Status copy. The runtime can be "running" in any of:
-  //   - Hosting a model locally (loaded.length > 0): straightforward.
-  //   - Acting as a Worker: providing GPU compute to another peer that
-  //     hosts the model. loaded.length is 0 but servingModels lists the
-  //     model the worker contributes to. Previously we showed "Load a
-  //     model below to start serving" here, which is wrong — the user IS
-  //     already contributing.
-  //   - Connected with no model assignment yet: idle but ready.
+  // Status copy. We follow the same vocabulary as the mesh node table and
+  // the public status page so the user sees consistent labels everywhere:
+  //   - "serving" — actively processing an inference request
+  //   - "loading" — model is loading into VRAM
+  //   - "standby" + has servingModels — model loaded, ready to serve
+  //   - "standby" + no models — connected but idle
+  // The runtime flips to "serving" only while a request is in flight, so
+  // most of the time a working node looks like "standby (with model)" =
+  // Ready. Without this distinction it looks like the node is doing
+  // nothing even when it's online and serving.
   const statusText = running
-    ? loaded.length > 0
-      ? `Sharing this machine — hosting ${loaded.length} model${loaded.length === 1 ? "" : "s"}`
-      : role === "Worker" && servingModels.length > 0
-        ? `Sharing GPU as Worker for ${servingModels[0]}`
-        : startupConfigured
-          ? "Loading the startup model…"
-          : "Connected to mesh — load a model below to host one locally."
+    ? meshState === "serving"
+      ? `Serving ${servingModels[0] ?? "your mesh"}`
+      : meshState === "loading" || (startupConfigured && loaded.length === 0)
+        ? "Loading the startup model…"
+        : servingModels.length > 0 || loaded.length > 0
+          ? `Ready — ${servingModels[0] ?? loaded[0]} loaded and waiting for requests`
+          : "Connected to mesh — load a model below to start serving."
     : stopped
       ? "Not running. Start to share this machine."
       : "Checking status…";
