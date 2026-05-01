@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 type Status = {
@@ -88,7 +89,10 @@ export function MeshLiveStatus({
           ? "Checking mesh…"
           : "Mesh unreachable";
     return (
-      <span className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-elev)] px-2.5 py-1 text-[11px] text-[var(--fg-muted)]">
+      <Link
+        href="/status"
+        className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-elev)] px-2.5 py-1 text-[11px] text-[var(--fg-muted)] transition hover:border-[var(--accent)]/40 hover:text-[var(--fg)]"
+      >
         <span className="relative inline-flex h-2 w-2">
           {phase === "online" && (
             <span
@@ -99,7 +103,7 @@ export function MeshLiveStatus({
           <span className={`relative inline-flex h-2 w-2 rounded-full ${dot}`} />
         </span>
         {label}
-      </span>
+      </Link>
     );
   }
 
