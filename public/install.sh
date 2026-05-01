@@ -224,7 +224,96 @@ download_binary() {
 
     mkdir -p "$INSTALL_DIR"
     install -m 0755 "$tmpdir/closedmesh" "$INSTALL_DIR/closedmesh"
+
+    # For macOS metal and Linux CPU, release-closedmesh.sh packs the full
+    # llama.cpp runtime (rpc-server-<flavor>, llama-server-<flavor>,
+    # llama-moe-{analyze,split}, and any runtime shared libs) into the same
+    # tarball. Copy those out too so the runtime can actually spawn llama.cpp
+    # after install — otherwise the user hits `rpc-server not found in
+    # ~/.local/bin` the first time they try to serve a model.
+    install_bundled_runtime_from "$tmpdir"
+
     ok "Installed: $INSTALL_DIR/closedmesh"
+}
+
+# install_bundled_runtime_from <dir> — copy any llama.cpp runtime binaries and
+# shared libs from <dir> into $INSTALL_DIR. Idempotent; safe to call on a dir
+# that happens not to contain them (e.g. GPU-flavored slim tarballs).
+install_bundled_runtime_from() {
+    local src="$1"
+    local name
+    for name in rpc-server llama-server; do
+        for variant in "${name}-metal" "${name}-cpu" "${name}-cuda" "${name}-rocm" "${name}-vulkan" "$name"; do
+            if [[ -f "$src/$variant" ]]; then
+                install -m 0755 "$src/$variant" "$INSTALL_DIR/$variant"
+            fi
+        done
+    done
+    for name in llama-moe-analyze llama-moe-split; do
+        if [[ -f "$src/$name" ]]; then
+            install -m 0755 "$src/$name" "$INSTALL_DIR/$name"
+        fi
+    done
+    shopt -s nullglob
+    local libs=()
+    libs+=("$src"/*.dylib "$src"/*.so "$src"/*.so.*)
+    shopt -u nullglob
+    if (( ${#libs[@]} > 0 )); then
+        local lib
+        for lib in "${libs[@]}"; do
+            install -m 0644 "$lib" "$INSTALL_DIR/"
+        done
+    fi
+}
+
+# download_llama_runtime_if_needed <target> — on Linux GPU flavors the slim
+# installer tarball ships only the main `closedmesh` binary. Fetch the matching
+# `closedmesh-v<version>-<target>.tar.gz` (produced by package-release.sh) for
+# the llama.cpp runtime binaries + GPU shared libraries and drop them next to
+# `closedmesh` in $INSTALL_DIR.
+#
+# No-op on macOS and Linux CPU — those targets ship the runtime in the main
+# tarball already.
+download_llama_runtime_if_needed() {
+    local target="$1"
+    case "$target" in
+        linux-x86_64-cuda|linux-x86_64-rocm|linux-x86_64-vulkan|linux-aarch64-vulkan)
+            ;;
+        *) return 0 ;;
+    esac
+
+    local version
+    version="$("$INSTALL_DIR/closedmesh" --version 2>/dev/null | awk '{print $2}')"
+    if [[ -z "$version" ]]; then
+        warn "Could not determine closedmesh version — skipping GPU runtime download."
+        warn "Install it manually from https://github.com/$REPO/releases/latest"
+        return 0
+    fi
+
+    local asset="closedmesh-v${version}-${target}.tar.gz"
+    local url="https://github.com/${REPO}/releases/download/v${version}/${asset}"
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    trap "rm -rf '$tmpdir'" RETURN
+
+    info "Downloading llama.cpp GPU runtime (${asset})…"
+    if ! curl -fsSL --retry 3 "$url" -o "$tmpdir/$asset"; then
+        warn "Failed to download $url"
+        warn "The main closedmesh binary is installed, but the llama.cpp GPU runtime is not."
+        warn "Serve mode will fail with 'rpc-server not found' until the runtime is in place."
+        warn "You can install it later with:"
+        warn "  curl -fsSL $url | tar -xz -C '$INSTALL_DIR' --strip-components=1"
+        return 0
+    fi
+
+    tar -xzf "$tmpdir/$asset" -C "$tmpdir"
+    if [[ ! -d "$tmpdir/mesh-bundle" ]]; then
+        warn "Unexpected archive layout in $asset (no mesh-bundle/ dir). Skipping runtime install."
+        return 0
+    fi
+
+    install_bundled_runtime_from "$tmpdir/mesh-bundle"
+    ok "Installed llama.cpp GPU runtime for $target"
 }
 
 install_from_local_build() {
@@ -540,6 +629,8 @@ main() {
         err "Installed binary did not run cleanly. Aborting."
         exit 1
     }
+
+    download_llama_runtime_if_needed "$target"
 
     seed_default_config
 

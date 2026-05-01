@@ -223,6 +223,7 @@ function NodesTable({
 }
 
 function NodeRow({ node }: { node: NodeSummary }) {
+  const isEntry = node.hostname?.startsWith("ip-") ?? false;
   const cap = node.capability;
   const backend = BACKEND_LABEL[cap.backend] ?? cap.backend;
   const vram = cap.vramGb || node.vramGb;
@@ -245,7 +246,7 @@ function NodeRow({ node }: { node: NodeSummary }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-semibold text-[var(--fg)]">
-            {node.hostname ?? node.id.slice(0, 10)}
+            {isEntry ? "Entry node" : (node.hostname ?? node.id.slice(0, 10))}
           </span>
           {node.isSelf && (
             <span className="rounded-full border border-[var(--border)] bg-[var(--bg-elev-2)] px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-[var(--fg-muted)]">
@@ -254,9 +255,11 @@ function NodeRow({ node }: { node: NodeSummary }) {
           )}
         </div>
         <div className="mt-0.5 text-[11px] text-[var(--fg-muted)]">
-          {backend} · {vram ? `${vram.toFixed(1)} GB memory` : "memory unknown"}
+          {isEntry
+            ? "mesh.closedmesh.com · always-on gateway"
+            : `${backend} · ${vram ? `${vram.toFixed(1)} GB memory` : "memory unknown"}`}
         </div>
-        {models.length > 0 && (
+        {!isEntry && models.length > 0 && (
           <div className="mt-1 truncate font-mono text-[10px] text-[var(--fg-muted)]">
             {models.join(", ")}
           </div>
