@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PublicHeader } from "../../components/PublicHeader";
 import { MeshLiveStatus } from "../../components/MeshLiveStatus";
 import { nodeDisplayState } from "../../lib/node-display-state";
@@ -63,12 +63,55 @@ function backendColor(backend: string): string {
 // Node card
 // ---------------------------------------------------------------------------
 
-function NodeCard({ node }: { node: MeshNode }) {
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem > 0 ? `${h}h ${rem}m` : `${h}h`;
+}
+
+function NodeCard({
+  node,
+  history,
+}: {
+  node: MeshNode;
+  history?: NodeHistory;
+}) {
   const hostname = prettyHostname(node.hostname);
   const isEntryNode = node.hostname?.startsWith("ip-");
   const cap = node.capability;
   const isServing = node.servingModels.length > 0;
-  const { dot, label: stateLabel } = nodeDisplayState(node);
+
+  // Apply history-based smoothing: if this node was in a "good" state
+  // (Ready or Serving) within the last 30 seconds, treat a transient
+  // current "Loading" or "Idle" snapshot as the steady-state — re-elections
+  // briefly flip nodes through these intermediate states even when they're
+  // healthy.
+  const recentlyGood =
+    history?.lastGoodAt && Date.now() - history.lastGoodAt < 30_000;
+  const smoothedNode: MeshNode =
+    recentlyGood && (node.state === "loading" || node.state === "standby")
+      ? {
+          ...node,
+          // Force Ready by ensuring servingModels is non-empty if we know it
+          // was good recently. Doesn't lie about model identity — only used
+          // by nodeDisplayState to pick the color.
+          state: "standby",
+          servingModels:
+            node.servingModels.length > 0 ? node.servingModels : ["(reloading)"],
+        }
+      : node;
+  const { dot, label: stateLabel } = nodeDisplayState(smoothedNode);
+
+  // "Online for Xm" when we have history. Tells the user this isn't a
+  // flapping node — it's been in the mesh consistently for a while.
+  const onlineFor =
+    history && !isEntryNode
+      ? formatDuration(Date.now() - history.firstSeen)
+      : null;
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] p-5 flex flex-col gap-4">
@@ -90,7 +133,11 @@ function NodeCard({ node }: { node: MeshNode }) {
               {isEntryNode ? "Entry node" : hostname}
             </div>
             <div className="text-[11px] text-[var(--fg-muted)] truncate">
-              {isEntryNode ? "mesh.closedmesh.com · always-on gateway" : `${stateLabel} · ${node.id}`}
+              {isEntryNode
+                ? "mesh.closedmesh.com · always-on gateway"
+                : onlineFor
+                  ? `${stateLabel} · online ${onlineFor} · ${node.id.slice(0, 10)}`
+                  : `${stateLabel} · ${node.id.slice(0, 10)}`}
             </div>
           </div>
         </div>
@@ -182,10 +229,28 @@ function SummaryBar({ status }: { status: MeshStatus }) {
 // Page
 // ---------------------------------------------------------------------------
 
+/**
+ * Track per-node history across polls so we don't show a healthy node as
+ * "Loading" or "Idle" just because the polling instant happened to catch
+ * a transient state. The mesh is constantly re-electing hosts and reloading
+ * models, so a single 20s snapshot of "Loading" or "Standby" is misleading
+ * — the node may have been "Ready" for the previous 5 minutes and just
+ * blipped through "Loading" for 200ms during a re-election.
+ */
+type NodeHistory = {
+  /** First time we saw this node id since this page was opened. */
+  firstSeen: number;
+  /** Last poll we saw this node id at all. */
+  lastSeen: number;
+  /** Last time the node was in a "good" state (Ready or Serving). */
+  lastGoodAt: number | null;
+};
+
 export default function StatusPage() {
   const [status, setStatus] = useState<MeshStatus | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState(false);
+  const historyRef = useRef<Map<string, NodeHistory>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -197,6 +262,29 @@ export default function StatusPage() {
         if (!res.ok) throw new Error(String(res.status));
         const data = (await res.json()) as MeshStatus;
         if (cancelled) return;
+
+        // Record what we just saw for each node so the per-node card can
+        // distinguish "freshly joined and loading" from "been here for 5
+        // minutes and currently re-loading after an election".
+        const now = Date.now();
+        const history = historyRef.current;
+        for (const node of data.nodes) {
+          const prior = history.get(node.id) ?? {
+            firstSeen: now,
+            lastSeen: now,
+            lastGoodAt: null,
+          };
+          const isGood =
+            node.state === "serving" ||
+            (node.capability?.loadedModels?.length ?? 0) > 0 ||
+            node.servingModels.length > 0;
+          history.set(node.id, {
+            firstSeen: prior.firstSeen,
+            lastSeen: now,
+            lastGoodAt: isGood ? now : prior.lastGoodAt,
+          });
+        }
+
         setStatus(data);
         setLastUpdated(new Date());
         setError(false);
@@ -204,7 +292,9 @@ export default function StatusPage() {
         if (!cancelled) setError(true);
       } finally {
         if (!cancelled) {
-          timer = window.setTimeout(tick, 20_000);
+          // Poll faster (5s) so we catch the steady-state more often than
+          // we catch transient "Loading" states during host re-elections.
+          timer = window.setTimeout(tick, 5_000);
         }
       }
     }
@@ -302,14 +392,18 @@ export default function StatusPage() {
               </div>
               <div className="space-y-3">
                 {sortedNodes.map((node) => (
-                  <NodeCard key={node.id} node={node} />
+                  <NodeCard
+                    key={node.id}
+                    node={node}
+                    history={historyRef.current.get(node.id)}
+                  />
                 ))}
               </div>
             </div>
 
             {/* Footer note */}
             <p className="text-center text-[11px] text-[var(--fg-muted)]">
-              Refreshes every 20 seconds &middot;{" "}
+              Refreshes every 5 seconds &middot;{" "}
               <a href="/download" className="text-[var(--accent)] hover:underline">
                 Add your machine to the mesh
               </a>
