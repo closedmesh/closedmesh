@@ -368,18 +368,24 @@ const ENTRY_STATUS_URL: &str = "https://mesh.closedmesh.com/api/status";
 /// Fallback join token baked in at build time.
 ///
 /// The canonical entry node (mesh.closedmesh.com) runs in Docker on AWS
-/// Lightsail with a persistent volume that preserves its Iroh identity. Its
-/// node ID — and therefore its Iroh ticket — is stable across container
-/// restarts. We bake the current token here so that users who can't reach
-/// mesh.closedmesh.com (captive portal, restrictive firewall, DNS failure,
-/// offline cold start) still get `--join` injected and can connect via the
-/// relay leg of the ticket. If the live fetch succeeds it always wins
-/// (fresher addresses); the fallback is only used when the HTTP call fails.
+/// Lightsail. The container mounts `/opt/closedmesh-data` to persist the
+/// Nostr identity, but the Iroh identity is currently regenerated on every
+/// container restart — so this token goes stale whenever the service is
+/// bounced. We bake it here as a last-resort fallback for users who can't
+/// reach mesh.closedmesh.com (captive portal, restrictive firewall, DNS
+/// failure, offline cold start) and need `--join` injected.
 ///
-/// Update this constant whenever the entry node's identity changes (i.e. the
-/// Lightsail instance or Docker volume is rebuilt from scratch).
+/// The live `--join-url https://mesh.closedmesh.com/api/status` path
+/// (added in closedmesh-llm v0.65.0) always re-fetches on restart, so this
+/// fallback only matters for users whose installed CLI is older than that.
+///
+/// Update this constant whenever the entry node container is restarted
+/// (e.g. image update, config change). Fetch the current value from
+/// `curl https://mesh.closedmesh.com/api/status | jq -r .token` on a host
+/// that has the bearer token, or by reading it locally on the Lightsail
+/// box via `curl http://localhost:3131/api/status | jq -r .token`.
 #[cfg(target_os = "macos")]
-const FALLBACK_JOIN_TOKEN: &str = "eyJpZCI6Ijk2NjhkZWZmZDcxOGJmY2JjOGRmMzc0MjZlMjAzMWY0NWE0YjAwY2VjNzdjM2NhYWY5Y2Q4MGYzZmRjMmEzOTgiLCJhZGRycyI6W3siUmVsYXkiOiJodHRwczovL3VzZTEtMS5yZWxheS5uMC5pcm9oLWNhbmFyeS5pcm9oLmxpbmsuLyJ9LHsiSXAiOiIzLjIxMC4zMC41ODo0MjE0MCJ9LHsiSXAiOiIxNzIuMTcuMC4xOjQyMTQwIn0seyJJcCI6IjE3Mi4yNi4zLjkxOjQyMTQwIn0seyJJcCI6IlsyNjAwOjFmMTg6NTI2Zjo0OTAwOjY4NjU6YzY4NzoxYTc0OjRiOWJdOjM2MTI1In1dfQ";
+const FALLBACK_JOIN_TOKEN: &str = "eyJpZCI6Ijg3Y2Y3MmUzZmM1NmFjOWM4MmVkMGU4YTE0NzU5ZGZlYzk1NjIyMWQ4NmM4NDUyN2U4MDY3MzRkNTkxYjEwMWYiLCJhZGRycyI6W3siUmVsYXkiOiJodHRwczovL3VzZTEtMS5yZWxheS5uMC5pcm9oLWNhbmFyeS5pcm9oLmxpbmsuLyJ9LHsiSXAiOiIzLjIxMC4zMC41ODo0MjE0MCJ9LHsiSXAiOiIxNzIuMTcuMC4xOjQyMTQwIn0seyJJcCI6IjE3Mi4yNi4zLjkxOjQyMTQwIn0seyJJcCI6IlsyNjAwOjFmMTg6NTI2Zjo0OTAwOjY4NjU6YzY4NzoxYTc0OjRiOWJdOjUyNjcxIn1dfQ";
 
 /// Public Iroh relays we explicitly hand to the runtime via `--relay`.
 ///
