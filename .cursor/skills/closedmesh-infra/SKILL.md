@@ -5,12 +5,29 @@ description: ClosedMesh infrastructure map, deploy flows, and environment variab
 
 # ClosedMesh Infrastructure
 
-## Repositories
+## Repository access policy — READ FIRST
+
+**The ONLY GitHub repositories you may interact with are the ones under the `closedmesh/` organization.** No exceptions. This applies to every tool: `git`, `gh`, the GitHub MCP, `curl` to api.github.com — anything.
+
+The only two allowed repos:
 
 | Repo | What it is | Local path |
 |------|-----------|-----------|
 | `closedmesh/closedmesh` | Next.js public site + Tauri desktop app | `/Users/al/apps/closedmesh` |
 | `closedmesh/closedmesh-llm` | Rust runtime binary + Docker entry node | `/Users/al/apps/closedmesh-llm` |
+
+### Do NOT touch (ever — not read, not fetch, not query)
+
+- `Mesh-LLM/mesh-llm` — historical public upstream of `closedmesh-llm`. Any `gh` auto-resolution to this repo is a bug, not a feature.
+- `michaelneale/mesh-llm` — transferred/renamed predecessor of the above; same rule applies.
+- Any other fork, mirror, or upstream you discover in git remotes or config.
+
+### Rules for `gh` and other GitHub tooling
+
+1. **Always scope `gh` explicitly:** pass `-R closedmesh/closedmesh` or `-R closedmesh/closedmesh-llm` on every invocation. Never rely on `gh`'s auto-resolution — the `closedmesh-llm` checkout was previously configured with an `upstream` remote that made `gh` resolve to `Mesh-LLM/mesh-llm` silently.
+2. **Local `.git/config` is locked down:** `/Users/al/apps/closedmesh-llm/.git/config` has `upstream` remote removed and `gh-resolved = base` pinned to `origin` (= `closedmesh/closedmesh-llm`). Do not add `upstream` or any non-`closedmesh/` remote back.
+3. **Before any `gh` call, confirm the target repo** either by `-R` flag or by reading the git config. If you can't confirm, don't run the command.
+4. **Subagents inherit this rule.** When dispatching a shell/browser subagent for git or `gh` work, include the repo-access policy in the prompt and require explicit `-R closedmesh/<repo>` scoping.
 
 ---
 
@@ -50,15 +67,22 @@ Current version: check `desktop/Cargo.toml`.
 
 ### Runtime binary (closedmesh-llm)
 
-Releases are triggered by **pushing a git tag**:
+Releases are triggered by **`workflow_dispatch`** — NOT a tag push (the workflow creates the tag itself).
 
 ```bash
-cd /Users/al/apps/closedmesh-llm
-git tag v0.X.Y
-git push origin v0.X.Y
+# Trigger via gh CLI (preferred):
+gh -R closedmesh/closedmesh-llm workflow run release.yml \
+  -f version=0.X.Y \
+  -f prerelease=false \
+  -f skip_gpu_bundles=false \
+  -f target_branch=main
+
+# Or via GitHub UI: Actions → Release → Run workflow
 ```
 
-GitHub Actions (`release.yml`) builds binaries for all platforms and uploads assets named `closedmesh-{os}-{arch}.tar.gz` (stable) and `closedmesh-v{version}-{os}-{arch}.tar.gz` (versioned).
+The workflow's `prepare_release` job bumps all `Cargo.toml` versions, commits to `main`, creates the tag, then build jobs run in parallel (~2.5h for Linux CUDA), and finally `Publish GitHub release` uploads the assets.
+
+GitHub Actions (`release.yml`) uploads assets named `closedmesh-{os}-{arch}.tar.gz` (stable alias, always points to latest) and `closedmesh-v{version}-{os}-{arch}.tar.gz` (versioned, pinned to that release).
 
 ### Entry node Docker (Lightsail)
 
