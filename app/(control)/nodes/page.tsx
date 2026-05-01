@@ -1,6 +1,5 @@
 "use client";
 
-import { useCallback, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { RemoteInstall } from "../../components/RemoteInstall";
 import { useMeshStatus, type NodeSummary } from "../../lib/use-mesh-status";
@@ -15,80 +14,17 @@ const BACKEND_LABEL: Record<string, string> = {
 
 export default function NodesPage() {
   const mesh = useMeshStatus();
-  const [busy, setBusy] = useState<"invite" | "join" | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
-  const [joinToken, setJoinToken] = useState("");
-
-  const copyInvite = useCallback(async () => {
-    setBusy("invite");
-    setToast(null);
-    try {
-      const res = await fetch("/api/control/invite", { method: "POST" });
-      const data = (await res.json()) as {
-        ok: boolean;
-        token?: string;
-        message?: string;
-      };
-      if (data.ok && data.token) {
-        await navigator.clipboard.writeText(data.token);
-        setToast("Invite copied. Send it to a teammate.");
-      } else {
-        setToast(data.message ?? "Couldn't create an invite.");
-      }
-    } catch (e) {
-      setToast(e instanceof Error ? e.message : "request failed");
-    } finally {
-      setBusy(null);
-    }
-  }, []);
-
-  const join = useCallback(async () => {
-    const token = joinToken.trim();
-    if (!token) return;
-    setBusy("join");
-    setToast(null);
-    try {
-      const res = await fetch("/api/control/join", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token }),
-      });
-      const data = (await res.json()) as { ok: boolean; message: string };
-      setToast(data.message);
-      if (data.ok) setJoinToken("");
-    } catch (e) {
-      setToast(e instanceof Error ? e.message : "request failed");
-    } finally {
-      setBusy(null);
-    }
-  }, [joinToken]);
 
   return (
     <div className="flex min-h-dvh flex-col">
       <PageHeader
         title="Mesh"
-        subtitle="Every machine sharing capacity with you. Add more for more speed."
+        subtitle="Every machine sharing capacity with you."
       />
 
       <main className="flex-1 overflow-y-auto scrollbar-thin">
         <div className="mx-auto flex max-w-5xl flex-col gap-5 px-6 py-6">
           <RemoteInstall />
-
-          <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <InviteCard busy={busy} onCopy={copyInvite} />
-            <JoinCard
-              busy={busy}
-              token={joinToken}
-              onTokenChange={setJoinToken}
-              onJoin={join}
-            />
-          </section>
-
-          {toast && (
-            <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2 text-xs text-[var(--fg-muted)]">
-              {toast}
-            </div>
-          )}
 
           <NodesTable
             nodes={mesh.nodes}
@@ -97,79 +33,6 @@ export default function NodesPage() {
           />
         </div>
       </main>
-    </div>
-  );
-}
-
-function InviteCard({
-  busy,
-  onCopy,
-}: {
-  busy: "invite" | "join" | null;
-  onCopy: () => void;
-}) {
-  return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-elev)] p-5">
-      <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--accent)]">
-        Invite a teammate
-      </div>
-      <div className="mt-1 text-base font-semibold tracking-tight text-[var(--fg)]">
-        Add their machine to your mesh
-      </div>
-      <p className="mt-1 text-[12px] text-[var(--fg-muted)]">
-        We&apos;ll generate a one-time link. Anyone you share it with can
-        join from their own laptop or workstation.
-      </p>
-      <button
-        onClick={onCopy}
-        disabled={busy !== null}
-        className="mt-4 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-black shadow-[0_8px_24px_-12px_rgba(255,122,69,0.7)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        {busy === "invite" ? "Creating…" : "Copy invite link"}
-      </button>
-    </div>
-  );
-}
-
-function JoinCard({
-  busy,
-  token,
-  onTokenChange,
-  onJoin,
-}: {
-  busy: "invite" | "join" | null;
-  token: string;
-  onTokenChange: (v: string) => void;
-  onJoin: () => void;
-}) {
-  return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-elev)] p-5">
-      <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--accent)]">
-        Join an existing mesh
-      </div>
-      <div className="mt-1 text-base font-semibold tracking-tight text-[var(--fg)]">
-        Got an invite from a teammate?
-      </div>
-      <p className="mt-1 text-[12px] text-[var(--fg-muted)]">
-        Paste their link below. This machine will start serving for their
-        mesh.
-      </p>
-      <div className="mt-4 flex gap-2">
-        <input
-          type="text"
-          value={token}
-          onChange={(e) => onTokenChange(e.target.value)}
-          placeholder="paste invite link…"
-          className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2 font-mono text-xs text-[var(--fg)] placeholder:text-[var(--fg-muted)] focus:border-[var(--accent)]/60 focus:outline-none"
-        />
-        <button
-          onClick={onJoin}
-          disabled={busy !== null || !token.trim()}
-          className="rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2 text-xs font-medium text-[var(--fg)] hover:bg-[var(--border)] disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {busy === "join" ? "Joining…" : "Join"}
-        </button>
-      </div>
     </div>
   );
 }

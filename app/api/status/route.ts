@@ -188,6 +188,10 @@ async function fetchRuntimeStatus(): Promise<RuntimeStatus | null> {
   }
 }
 
+function isEntryNode(hostname: string | null | undefined): boolean {
+  return (hostname ?? "").startsWith("ip-");
+}
+
 function buildNodes(rt: RuntimeStatus): NodeSummary[] {
   const nodes: NodeSummary[] = [];
   // Local node first — it's always present even on a one-node mesh.
@@ -205,6 +209,9 @@ function buildNodes(rt: RuntimeStatus): NodeSummary[] {
     capability: summarizeCapability(inferLocalCapability(rt)),
   });
   for (const peer of rt.peers ?? []) {
+    // Entry nodes are always-on cloud gateways, not user machines — exclude
+    // them so counts and lists only reflect real member machines.
+    if (isEntryNode(peer.hostname)) continue;
     nodes.push({
       id: peer.id ?? "",
       hostname: peer.hostname ?? null,
