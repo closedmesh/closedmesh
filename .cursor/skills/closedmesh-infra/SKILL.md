@@ -61,7 +61,11 @@ Check existing deployments: `vercel ls`
    - `desktop/Cargo.toml` → `version = "X.Y.Z"`
    - `desktop/tauri.conf.json` → `"version": "X.Y.Z"`
 2. Commit and push to `main` on `closedmesh/closedmesh`
-3. GitHub Actions (`desktop-release.yml`) builds `.dmg` / installers automatically
+3. Push a `desktop-vX.Y.Z` **tag** — this is what triggers the build, NOT the branch push:
+   ```bash
+   git tag desktop-vX.Y.Z && git push origin desktop-vX.Y.Z
+   ```
+4. GitHub Actions (`desktop-release.yml`) builds `.dmg` / installers (~10 min)
 
 Current version: check `desktop/Cargo.toml`.
 

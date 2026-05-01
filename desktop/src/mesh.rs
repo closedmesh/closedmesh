@@ -488,6 +488,23 @@ fn repair_launchd_plist(bin: &std::path::Path) {
         .arg(&plist_path)
         .output();
 
+    // Ensure the log directory referenced in the plist exists. launchd
+    // refuses to bootstrap (exit code 5 / EIO) if it can't open the log
+    // files, and it does NOT create the directory itself.
+    if let Some(home) = dirs::home_dir() {
+        let _ = std::fs::create_dir_all(home.join("Library/Logs/closedmesh"));
+    }
+
+    // Clear the macOS quarantine attribute on the binary before bootstrapping.
+    // Downloaded binaries receive com.apple.quarantine from the OS. The desktop
+    // process can spawn them fine (inherited trust), but launchd launching them
+    // as a fresh session gets EIO (exit code 5). This is a safe no-op on
+    // already-cleared binaries.
+    let _ = Command::new("xattr")
+        .args(["-dr", "com.apple.quarantine"])
+        .arg(bin)
+        .output();
+
     let tmp_path = plist_path.with_extension("plist.tmp");
     if let Some(parent) = plist_path.parent() {
         let _ = std::fs::create_dir_all(parent);
