@@ -6,6 +6,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { Setup } from "../../components/Setup";
 import { MODEL_CATALOG, type CatalogModel } from "../../lib/model-catalog";
 import { useMeshStatus, type NodeSummary } from "../../lib/use-mesh-status";
+import { nodeDisplayState } from "../../lib/node-display-state";
 
 type ServiceState =
   | { state: "running"; pid: number | null }
@@ -824,30 +825,18 @@ function ThisNodeCard({
   const backend = cap ? BACKEND_LABEL[cap.backend] ?? cap.backend : null;
   const vram = cap?.vramGb ?? self?.vramGb ?? 0;
   const loaded = cap?.loadedModels ?? [];
-  const servingModels = self?.servingModels ?? [];
-  const meshState = self?.state ?? "";
 
-  // Status copy. We follow the same vocabulary as the mesh node table and
-  // the public status page so the user sees consistent labels everywhere:
-  //   - "serving" — actively processing an inference request
-  //   - "loading" — model is loading into VRAM
-  //   - "standby" + has servingModels — model loaded, ready to serve
-  //   - "standby" + no models — connected but idle
-  // The runtime flips to "serving" only while a request is in flight, so
-  // most of the time a working node looks like "standby (with model)" =
-  // Ready. Without this distinction it looks like the node is doing
-  // nothing even when it's online and serving.
-  const statusText = running
-    ? meshState === "serving"
-      ? `Serving ${servingModels[0] ?? "your mesh"}`
-      : meshState === "loading" || (startupConfigured && loaded.length === 0)
-        ? "Loading the startup model…"
-        : servingModels.length > 0 || loaded.length > 0
-          ? `Ready — ${servingModels[0] ?? loaded[0]} loaded and waiting for requests`
-          : "Connected to mesh — load a model below to start serving."
-    : stopped
+  // Status text and dot color come from the shared node-display-state helper
+  // so this card, the /nodes mesh table, and the public status page can never
+  // disagree about whether the same node is Ready / Idle / Offline.
+  const display = nodeDisplayState(self, running);
+  const statusText = !running
+    ? stopped
       ? "Not running. Start to share this machine."
-      : "Checking status…";
+      : "Checking status…"
+    : startupConfigured && display.label === "Idle"
+      ? "Loading the startup model…"
+      : display.description;
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elev)] p-6">
@@ -865,7 +854,7 @@ function ThisNodeCard({
             className={
               "mt-1 inline-block h-3 w-3 rounded-full " +
               (running
-                ? "bg-emerald-400 shadow-[0_0_14px_rgba(52,211,153,0.7)]"
+                ? `${display.dot} ${display.label === "Ready" || display.label === "Serving" ? "shadow-[0_0_14px_rgba(52,211,153,0.7)]" : ""}`
                 : stopped
                   ? "bg-zinc-500"
                   : "bg-amber-400")

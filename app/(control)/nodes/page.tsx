@@ -3,6 +3,7 @@
 import { PageHeader } from "../../components/PageHeader";
 import { RemoteInstall } from "../../components/RemoteInstall";
 import { useMeshStatus, type NodeSummary } from "../../lib/use-mesh-status";
+import { nodeDisplayState } from "../../lib/node-display-state";
 
 const BACKEND_LABEL: Record<string, string> = {
   metal: "Apple Metal",
@@ -91,28 +92,9 @@ function NodeRow({ node }: { node: NodeSummary }) {
   const backend = BACKEND_LABEL[cap.backend] ?? cap.backend;
   const vram = cap.vramGb || node.vramGb;
   const models = node.servingModels;
-  // The runtime's `state` field is "serving" only while a request is in
-  // flight. Between requests it reports "standby" even when a model is
-  // loaded and ready. Treat "standby with models loaded" as "Ready" so the
-  // node table doesn't claim a node is idle when it's actually online and
-  // ready to serve.
-  const isReady = node.state === "standby" && models.length > 0;
-  const stateLabel =
-    node.state === "serving"
-      ? "Serving"
-      : node.state === "loading"
-        ? "Warming up"
-        : isReady
-          ? "Ready"
-          : node.role;
-  const stateColor =
-    node.state === "serving"
-      ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300"
-      : node.state === "loading"
-        ? "border-amber-400/40 bg-amber-400/10 text-amber-300"
-        : isReady
-          ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300"
-          : "border-zinc-400/40 bg-zinc-400/10 text-zinc-300";
+  const display = nodeDisplayState(node);
+  const stateLabel = display.label;
+  const stateColor = display.badge;
 
   return (
     <li className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5">
