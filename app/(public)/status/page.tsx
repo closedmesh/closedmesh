@@ -191,8 +191,18 @@ function NodeCard({
 // ---------------------------------------------------------------------------
 
 function SummaryBar({ status }: { status: MeshStatus }) {
-  const workers = status.nodes.filter((n) => !n.isSelf && n.state === "serving").length;
+  // "Sharing" = any non-entry node that's connected to the mesh. Used to
+  // be filtered to `state === "serving"` which only counted nodes literally
+  // executing a request that millisecond — almost always 0, even on a
+  // healthy mesh — making it look like nothing was happening.
   const totalNodes = status.nodes.filter((n) => !n.hostname?.startsWith("ip-")).length;
+  const sharingNodes = status.nodes.filter(
+    (n) =>
+      !n.hostname?.startsWith("ip-") &&
+      ((n.capability?.loadedModels?.length ?? 0) > 0 ||
+        n.servingModels.length > 0 ||
+        n.state === "serving"),
+  ).length;
   const models = status.models;
 
   return (
@@ -215,10 +225,10 @@ function SummaryBar({ status }: { status: MeshStatus }) {
       </div>
       <div className="flex flex-col items-center gap-0.5 px-4 py-4">
         <div className="text-2xl font-semibold tabular-nums text-emerald-400">
-          {workers}
+          {sharingNodes}
         </div>
         <div className="text-[11px] text-[var(--fg-muted)]">
-          {workers === 1 ? "node serving" : "nodes serving"}
+          {sharingNodes === 1 ? "node sharing GPU" : "nodes sharing GPU"}
         </div>
       </div>
     </div>
