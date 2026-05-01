@@ -820,6 +820,13 @@ function ThisNodeCard({
   // happens when the autostart unit boots `closedmesh serve --auto` but
   // no model is configured in ~/.closedmesh/config.toml yet. Surface that
   // state honestly. The Quick-start card below this one offers the fix.
+  //
+  // "unmanaged": the process is alive and mesh-connected (self !== null) but
+  // not tracked by launchd/systemd — typically on a fresh install where the
+  // desktop launched the binary directly. In this state calling "service start"
+  // can kill the running process if launchd registration fails. Surface it
+  // distinctly so the user understands clicking the button is a restart.
+  const unmanaged = !running && !stopped && self !== null;
   const statusText = running
     ? loaded.length > 0
       ? "Sharing this machine with your mesh"
@@ -828,7 +835,9 @@ function ThisNodeCard({
         : "Running. Load a model below to start serving."
     : stopped
       ? "Not running. Start to share this machine."
-      : "Checking status…";
+      : unmanaged
+        ? "Connected to mesh — service not yet registered for auto-start."
+        : "Checking status…";
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elev)] p-6">
@@ -873,6 +882,20 @@ function ThisNodeCard({
               className="rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-4 py-2 text-sm font-medium text-[var(--fg)] transition hover:bg-[var(--border)] disabled:cursor-not-allowed disabled:opacity-40"
             >
               {busy === "stop" ? "Stopping…" : "Stop sharing"}
+            </button>
+          ) : unmanaged ? (
+            // Process is running and mesh-connected but not registered as a
+            // launchd/systemd service. "Register service" calls the same
+            // service-start flow, but the label and tooltip make it clear this
+            // is a registration step — not starting a stopped service — so the
+            // user understands it may briefly reconnect if registration fails.
+            <button
+              disabled={busy !== null}
+              onClick={onStart}
+              title="ClosedMesh is already connected to the mesh. This will register it as a system service for auto-start. If registration fails, the node may briefly disconnect."
+              className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-5 py-2 text-sm font-semibold text-amber-300 transition hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {busy === "start" ? "Registering…" : "Register service"}
             </button>
           ) : (
             <button
@@ -1314,7 +1337,7 @@ function QuickActions({
         <ActionLink href="/nodes">Add a remote machine</ActionLink>
       </div>
       {toast && (
-        <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2 text-xs text-[var(--fg-muted)]">
+        <div className="mt-3 whitespace-pre-line rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2 text-xs text-[var(--fg-muted)]">
           {toast}
         </div>
       )}

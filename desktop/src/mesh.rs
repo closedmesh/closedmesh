@@ -453,6 +453,28 @@ fn repair_launchd_plist(bin: &std::path::Path) {
         if bytes == xml.as_bytes() {
             return;
         }
+        // Log what actually changed so we can diagnose spurious bounces.
+        // We only show the first differing line from each side to keep the
+        // log concise; a future reader can compare the full plist on disk.
+        let old_str = String::from_utf8_lossy(bytes);
+        let first_old_diff = old_str
+            .lines()
+            .zip(xml.lines())
+            .find(|(a, b)| a != b)
+            .map(|(old, _)| old.trim())
+            .unwrap_or("<length mismatch>");
+        let first_new_diff = xml
+            .lines()
+            .zip(old_str.lines())
+            .find(|(a, b)| a != b)
+            .map(|(new, _)| new.trim())
+            .unwrap_or("<length mismatch>");
+        eprintln!(
+            "[closedmesh] self-heal: plist changed — first diff: \
+             old={first_old_diff:?} new={first_new_diff:?}; bouncing launchd"
+        );
+    } else {
+        eprintln!("[closedmesh] self-heal: writing plist for the first time; bouncing launchd");
     }
 
     // Some users (and at least one previous incarnation of this code,
@@ -486,25 +508,6 @@ fn repair_launchd_plist(bin: &std::path::Path) {
         let _ = std::fs::remove_file(&tmp_path);
         return;
     }
-
-    // Loud success message so an operator tailing stderr.log knows when
-    // self-heal finally took. Especially useful for the retry-loop case
-    // where the *first* launch failed to fetch the token but a later
-    // attempt converged — without this log, success looks identical to
-    // "nothing changed" in the byte-equality short-circuit above.
-    let join_kind = if join_args
-        .iter()
-        .any(|a| a == "--join-url")
-    {
-        "--join-url"
-    } else if join_args.iter().any(|a| a == "--join") {
-        "--join <token>"
-    } else {
-        "Nostr-only fallback (no token fetched)"
-    };
-    eprintln!(
-        "[closedmesh] self-heal: wrote plist with {join_kind}; bouncing launchd"
-    );
 
     bounce_launchd_agent(&plist_path);
 }
@@ -674,10 +677,14 @@ fn xml_escape(s: &str) -> String {
 }
 
 /// `launchctl bootout` (idempotent — succeeds whether or not the agent is
-/// loaded) followed by `launchctl bootstrap` to pick up the rewritten
-/// plist. We swallow errors: the worst case is the next `closedmesh
-/// service start` call below picks it up, or the service stays on its
-/// previous args until the next launch.
+/// loaded) followed by `launchctl bootstrap` to pick up the rewritten plist.
+///
+/// If `bootstrap` fails we call `start_service()` as a last-resort fallback
+/// so that a failed launchd registration does not leave the node dead. The
+/// most common cause on macOS is a transient I/O error (exit code 5) from
+/// launchd when the log directory or the plist hasn't flushed to disk yet;
+/// `start_service()` retries the same codepath and usually succeeds on the
+/// second attempt.
 #[cfg(target_os = "macos")]
 fn bounce_launchd_agent(plist_path: &std::path::Path) {
     let uid = current_uid();
@@ -689,9 +696,45 @@ fn bounce_launchd_agent(plist_path: &std::path::Path) {
         .output();
 
     let plist_str = plist_path.display().to_string();
-    let _ = Command::new("launchctl")
+    let bootstrap = Command::new("launchctl")
         .args(["bootstrap", &target, &plist_str])
         .output();
+
+    let failed = match &bootstrap {
+        Ok(out) => !out.status.success(),
+        Err(_) => true,
+    };
+
+    if failed {
+        let (code, detail) = match &bootstrap {
+            Ok(out) => {
+                let msg = [
+                    String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                    String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                ]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" / ");
+                (out.status.code(), msg)
+            }
+            Err(e) => (None, e.to_string()),
+        };
+        eprintln!(
+            "[closedmesh] launchctl bootstrap failed (exit {:?}){} \
+             plist={} — falling back to service start",
+            code,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            },
+            plist_path.display(),
+        );
+        // Give launchd a moment to settle after the bootout before retrying.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        start_service();
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1095,7 +1138,38 @@ fn locate_binary() -> Option<PathBuf> {
 
 fn run_cli(args: &[&str]) {
     let Some(bin) = locate_binary() else { return };
-    // Discard output — the tray polls `:3131/api/status` for ground truth
-    // anyway, so the next refresh tells us whether the start/stop took.
-    let _ = Command::new(bin).args(args).output();
+    // The tray polls `:3131/api/status` for ground truth, so we don't need
+    // to parse output for success. But we do log failures so they appear in
+    // macOS Console (searchable with "closedmesh" subsystem) and in any
+    // attached terminal session.
+    match Command::new(&bin).args(args).output() {
+        Ok(out) if !out.status.success() => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            eprintln!(
+                "[closedmesh] {} {:?} failed (exit {:?}){}{}",
+                bin.display(),
+                args,
+                out.status.code(),
+                if stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", stderr.trim())
+                },
+                if stdout.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" [stdout: {}]", stdout.trim())
+                },
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[closedmesh] failed to spawn {} {:?}: {e}",
+                bin.display(),
+                args,
+            );
+        }
+        _ => {}
+    }
 }
