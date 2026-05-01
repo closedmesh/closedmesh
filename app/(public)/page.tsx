@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ChatExperience } from "../components/ChatExperience";
+import {
+  ChatExperience,
+  type ChatEmptyStateApi,
+} from "../components/ChatExperience";
 import { MeshLiveStatus } from "../components/MeshLiveStatus";
 import { PublicHeader } from "../components/PublicHeader";
 
@@ -34,13 +37,15 @@ export default function PublicHomePage() {
       <PublicHeader status={<MeshLiveStatus variant="header" />} />
 
       <main className="flex flex-1 flex-col">
-        <ChatExperience empty={<HomepageIntro />} />
+        <ChatExperience
+          empty={(api) => <HomepageIntro onSuggest={api.onSuggest} />}
+        />
       </main>
     </div>
   );
 }
 
-function HomepageIntro() {
+function HomepageIntro({ onSuggest }: { onSuggest: ChatEmptyStateApi["onSuggest"] }) {
   // Three suggestions chosen to be:
   // - immediately relatable (no jargon, no insider product talk)
   // - structurally different from each other (write / explain / plan)
@@ -79,11 +84,14 @@ function HomepageIntro() {
         </div>
         <ul className="mt-8 space-y-2 text-left">
           {suggestions.map((s) => (
-            <li
-              key={s}
-              className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-3 text-sm text-[var(--fg-muted)] transition hover:border-[var(--accent)]/30 hover:text-[var(--fg)]"
-            >
-              {s}
+            <li key={s}>
+              <button
+                type="button"
+                onClick={() => onSuggest(s)}
+                className="block w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-3 text-left text-sm text-[var(--fg-muted)] transition hover:border-[var(--accent)]/30 hover:bg-[var(--bg-elev-2)] hover:text-[var(--fg)] focus:outline-none focus-visible:border-[var(--accent)]/60"
+              >
+                {s}
+              </button>
             </li>
           ))}
         </ul>

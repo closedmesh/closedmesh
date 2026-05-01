@@ -28,9 +28,23 @@ function readPersistedMessages(threadId: string): UIMessage[] {
   }
 }
 
+/**
+ * Hooks exposed to empty-state builders so a suggestion tile can prefill
+ * and focus the composer. Kept intentionally minimal — anything richer
+ * (submit, streaming state) belongs inside ChatExperience itself.
+ */
+export type ChatEmptyStateApi = {
+  /** Prefill the composer with `text` and focus the textarea. */
+  onSuggest: (text: string) => void;
+};
+
 export type ChatExperienceProps = {
-  /** Empty-state shown above the composer when there are no messages yet. */
-  empty?: React.ReactNode;
+  /**
+   * Empty-state shown above the composer when there are no messages yet.
+   * Accepts either a plain ReactNode or a builder that receives the
+   * composer api so suggestions can wire `onClick` to prefill the input.
+   */
+  empty?: React.ReactNode | ((api: ChatEmptyStateApi) => React.ReactNode);
   /** Content rendered above the messages list. Used for marketing copy. */
   intro?: React.ReactNode;
   /** Class applied to the outer scroll container. */
@@ -142,6 +156,31 @@ export function ChatExperience({
     setMessages([]);
   }, [threadId, setMessages]);
 
+  // Suggestion tiles prefill the composer rather than auto-submitting so the
+  // visitor stays in control (they can edit, add context, or cancel). Also
+  // resize the textarea to fit multi-line prompts and focus it.
+  const handleSuggest = useCallback((text: string) => {
+    setInput(text);
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+      el.focus();
+      const len = text.length;
+      try {
+        el.setSelectionRange(len, len);
+      } catch {
+        // some browsers throw on setSelectionRange for detached nodes
+      }
+    }
+  }, []);
+
+  const emptyApi = useMemo<ChatEmptyStateApi>(
+    () => ({ onSuggest: handleSuggest }),
+    [handleSuggest],
+  );
+  const renderedEmpty = typeof empty === "function" ? empty(emptyApi) : empty;
+
   const innerWrap = centered
     ? "mx-auto flex max-w-3xl flex-col gap-5 px-4 py-8"
     : "flex flex-col gap-5 px-4 py-8";
@@ -157,7 +196,7 @@ export function ChatExperience({
         <div className={innerWrap}>
           {intro}
           {messages.length === 0 ? (
-            empty ?? null
+            renderedEmpty ?? null
           ) : (
             messages.map((m) => <ChatMessage key={m.id} message={m} />)
           )}

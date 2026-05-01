@@ -2,7 +2,10 @@
 
 import Link from "next/link";
 import { useCallback, useState } from "react";
-import { ChatExperience } from "../../components/ChatExperience";
+import {
+  ChatExperience,
+  type ChatEmptyStateApi,
+} from "../../components/ChatExperience";
 import { PageHeader } from "../../components/PageHeader";
 import { StatusPill } from "../../components/StatusPill";
 
@@ -47,13 +50,17 @@ export default function ChatPage() {
 
       <ChatExperience
         key={threadNonce}
-        empty={<ControlEmptyState />}
+        empty={(api) => <ControlEmptyState onSuggest={api.onSuggest} />}
       />
     </div>
   );
 }
 
-function ControlEmptyState() {
+function ControlEmptyState({
+  onSuggest,
+}: {
+  onSuggest: ChatEmptyStateApi["onSuggest"];
+}) {
   const suggestions = [
     "Write a polite email canceling tomorrow's meeting.",
     "Explain compound interest to a curious 12-year-old.",
@@ -78,11 +85,14 @@ function ControlEmptyState() {
         </div>
         <ul className="mt-8 space-y-2 text-left">
           {suggestions.map((s) => (
-            <li
-              key={s}
-              className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-3 text-sm text-[var(--fg-muted)] transition hover:border-[var(--accent)]/30 hover:text-[var(--fg)]"
-            >
-              {s}
+            <li key={s}>
+              <button
+                type="button"
+                onClick={() => onSuggest(s)}
+                className="block w-full rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-3 text-left text-sm text-[var(--fg-muted)] transition hover:border-[var(--accent)]/30 hover:bg-[var(--bg-elev-2)] hover:text-[var(--fg)] focus:outline-none focus-visible:border-[var(--accent)]/60"
+              >
+                {s}
+              </button>
             </li>
           ))}
         </ul>
