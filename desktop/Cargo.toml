@@ -1,6 +1,6 @@
 [package]
 name = "closedmesh-desktop"
-version = "0.1.31"
+version = "0.1.32"
 edition = "2021"
 description = "Cross-platform desktop shell for ClosedMesh — an open peer-to-peer mesh of contributed compute serving open-weight models."
 license = "MIT OR Apache-2.0"
