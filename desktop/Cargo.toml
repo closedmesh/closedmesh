@@ -1,6 +1,6 @@
 [package]
 name = "closedmesh-desktop"
-version = "0.1.40"
+version = "0.1.41"
 edition = "2021"
 description = "Cross-platform desktop shell for ClosedMesh — an open peer-to-peer mesh of contributed compute serving open-weight models."
 license = "MIT OR Apache-2.0"
@@ -30,6 +30,15 @@ ureq = { version = "2", default-features = false, features = ["json", "rustls"] 
 
 # Single-shot env var lookups; `dirs` for resolving ~/Library/Logs etc.
 dirs = "5"
+
+# Used to dup2 the desktop process's stderr onto a real log file at
+# startup. Tauri .app launches from Finder hand stdout/stderr to /dev/null
+# (and Windows windowed apps don't even allocate a console), which means
+# every `eprintln!` in the runtime upgrade / self-heal paths was vanishing
+# silently. libc is already in our transitive tree via tauri/ureq; making
+# it a direct dep just lets us call `dup2` without writing FFI by hand.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 # A single-binary GUI shell doesn't benefit from the default codegen units;

@@ -35,6 +35,16 @@ struct AppState {
 }
 
 fn main() {
+    // Capture every `eprintln!` from the desktop process — including the
+    // runtime auto-upgrade thread — into a real log file. A Tauri .app
+    // launched from Finder hands stdout/stderr to `/dev/null`, so before
+    // 0.1.41 every upgrade attempt that failed left zero forensic trace
+    // (we knew the runtime was stuck on an old version but couldn't see
+    // *why* the loop hadn't fixed it). Doing this first thing in `main`
+    // means every subsequent line lands in the file regardless of which
+    // thread emits it.
+    redirect_stderr_to_desktop_log();
+
     let state = Arc::new(AppState {
         last_status: Mutex::new(MeshStatus::default()),
         sidecar: Mutex::new(None),
@@ -526,4 +536,108 @@ fn webview_cache_dirs() -> Vec<std::path::PathBuf> {
     out
 }
 
+/// Open `~/Library/Logs/closedmesh/desktop.log` (or the platform
+/// equivalent) and `dup2` it over file descriptor 2. After this call,
+/// every `eprintln!` and every `tracing::error` written to stderr lands
+/// in that file regardless of which thread emits it. We deliberately
+/// `mem::forget` the [`File`] handle so dropping it doesn't close the
+/// fd we just installed.
+///
+/// All errors are swallowed: if we can't open the log file the only
+/// regression is that we keep the previous `eprintln!`-into-`/dev/null`
+/// behavior, which is no worse than every release before 0.1.41.
+///
+/// Why not redirect stdout too? Tauri's webview spams stdout with WKWebView
+/// internals on macOS and we don't want to balloon the log file with that
+/// noise. The runtime-upgrade and self-heal codepaths only use stderr.
+#[cfg(unix)]
+fn redirect_stderr_to_desktop_log() {
+    use std::io::Write;
+    use std::os::unix::io::AsRawFd;
 
+    let Some(dir) = mesh::default_log_dir() else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("desktop.log");
+    let Ok(f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+
+    // Print a session-start banner *before* dup2 so users browsing the
+    // file see a clean separator between launches; without this every
+    // eprintln from the previous run smushes into the next.
+    let mut writer = &f;
+    let _ = writeln!(
+        writer,
+        "\n=== ClosedMesh desktop {} starting at {} (pid {}) ===",
+        env!("CARGO_PKG_VERSION"),
+        chrono_like_now(),
+        std::process::id(),
+    );
+    let _ = writer.flush();
+
+    unsafe {
+        // STDERR_FILENO == 2. Returns -1 on failure; we ignore that — the
+        // worst case is keeping the existing /dev/null fd, which is what
+        // we'd have without this call anyway.
+        libc::dup2(f.as_raw_fd(), libc::STDERR_FILENO);
+    }
+    // Keep the underlying file alive past the dup2: if we let `f` Drop
+    // here, the kernel would close the original fd, but the duplicate at
+    // fd 2 stays valid (dup2 is "make fd 2 refer to the same file as
+    // fd N", not "share ownership"). The forget is belt-and-braces — it
+    // costs us one File worth of memory until process exit and avoids
+    // any future refactor accidentally relying on the descriptor count.
+    std::mem::forget(f);
+}
+
+#[cfg(not(unix))]
+fn redirect_stderr_to_desktop_log() {
+    // TODO: Windows equivalent (CreateFile + SetStdHandle / _dup2 from msvcrt).
+    // Not blocking: 0.1.x desktop is overwhelmingly macOS-installed today.
+}
+
+/// `time` crate / `chrono` would both be heavier deps than this single
+/// timestamp justifies. We just want something human-readable for the
+/// session-start banner; ISO-8601 to second precision is enough.
+fn chrono_like_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Cheap UTC ISO-8601 without timezone DB. Good enough for a log
+    // banner; for sub-second precision we have the kernel-stamped
+    // mtime on the log file itself.
+    let days = secs / 86_400;
+    let secs_in_day = secs % 86_400;
+    let hh = secs_in_day / 3600;
+    let mm = (secs_in_day % 3600) / 60;
+    let ss = secs_in_day % 60;
+    let (y, mo, d) = days_to_ymd(days as i64);
+    format!("{y:04}-{mo:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+/// Convert "days since 1970-01-01" to (year, month, day). Tiny civil-from-days
+/// implementation, lifted from Howard Hinnant's date algorithms (public
+/// domain). Avoids pulling in `chrono` / `time` for one log line.
+fn days_to_ymd(z: i64) -> (i32, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i32 + (era * 400) as i32;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}

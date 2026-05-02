@@ -374,11 +374,45 @@ pub fn stop_service() {
 /// of typing something when the bounce happens.
 const RUNTIME_UPGRADE_INITIAL_DELAY: Duration = Duration::from_secs(30);
 
-/// Re-check interval after the first attempt. Six hours is long enough
-/// that we're not hammering GitHub from machines that stay open for
-/// days, but short enough that an "Elevens left their laptop on for 18
-/// hours" scenario still picks up a critical fix the same day it ships.
+/// Steady-state re-check interval after a successful check (whether
+/// the check upgraded us or confirmed we were already up-to-date). Six
+/// hours is long enough that we're not hammering GitHub from machines
+/// that stay open for days, but short enough that an "Elevens left
+/// their laptop on for 18 hours" scenario still picks up a critical
+/// fix the same day it ships.
 const RUNTIME_UPGRADE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Backoff schedule used after a *failed* upgrade attempt. The previous
+/// loop slept the full 6h interval after every failure, which meant a
+/// transient hiccup at T+30s after launch (Wi-Fi reconnecting, captive
+/// portal, slow DNS, GitHub 5xx) silently stranded the user on the old
+/// runtime for the next 6 hours — by which point most laptops have
+/// gone to sleep. We instead retry at 2 min, 10 min, then 1 hour
+/// before settling back into the 6 h cadence. Four extra HTTPS GETs
+/// in an hour against the GitHub redirect endpoint is negligible load.
+const RUNTIME_UPGRADE_FAILURE_BACKOFF: &[Duration] = &[
+    Duration::from_secs(2 * 60),
+    Duration::from_secs(10 * 60),
+    Duration::from_secs(60 * 60),
+];
+
+/// Outcome of one `try_upgrade_runtime` call. Splitting "no upgrade
+/// available" from "tried and failed" lets the caller pick the right
+/// next sleep — steady 6h cadence vs the failure backoff above. The
+/// previous `Option<PathBuf>` collapsed both into `None`, which is why
+/// a single transient failure looked identical to a healthy node and
+/// triggered the same long sleep.
+enum UpgradeOutcome {
+    /// Installed runtime is already at least as new as the latest
+    /// release. The next attempt can wait the full steady-state
+    /// interval.
+    UpToDate,
+    /// Successfully replaced the runtime binary; new path returned.
+    Upgraded(PathBuf),
+    /// The check (or download / verify / swap) failed. The caller
+    /// should retry sooner than steady state.
+    Failed,
+}
 
 /// GitHub "latest release" landing page. We send a no-redirect GET and
 /// read the `Location` header (e.g. `…/releases/tag/v0.65.9`) — that's
@@ -406,24 +440,71 @@ fn spawn_runtime_upgrade_loop(bin: PathBuf) {
     std::thread::spawn(move || {
         let mut current = bin;
         std::thread::sleep(RUNTIME_UPGRADE_INITIAL_DELAY);
+        // Index into `RUNTIME_UPGRADE_FAILURE_BACKOFF`; reset to None on
+        // any non-`Failed` outcome so the next miss starts the backoff
+        // schedule from the beginning instead of from wherever the last
+        // failure cluster left off.
+        let mut backoff_idx: Option<usize> = None;
         loop {
-            if let Some(new_path) = try_upgrade_runtime(&current) {
-                current = new_path;
-            }
-            std::thread::sleep(RUNTIME_UPGRADE_INTERVAL);
+            let outcome = try_upgrade_runtime(&current);
+            let next_sleep = match outcome {
+                UpgradeOutcome::Upgraded(p) => {
+                    eprintln!(
+                        "[closedmesh] runtime upgrade: success; sleeping {:?} before next check",
+                        RUNTIME_UPGRADE_INTERVAL
+                    );
+                    current = p;
+                    backoff_idx = None;
+                    RUNTIME_UPGRADE_INTERVAL
+                }
+                UpgradeOutcome::UpToDate => {
+                    backoff_idx = None;
+                    RUNTIME_UPGRADE_INTERVAL
+                }
+                UpgradeOutcome::Failed => {
+                    let next_idx = match backoff_idx {
+                        Some(i) => i + 1,
+                        None => 0,
+                    };
+                    if next_idx < RUNTIME_UPGRADE_FAILURE_BACKOFF.len() {
+                        backoff_idx = Some(next_idx);
+                        let d = RUNTIME_UPGRADE_FAILURE_BACKOFF[next_idx];
+                        eprintln!(
+                            "[closedmesh] runtime upgrade: failed (attempt {}); retrying in {:?}",
+                            next_idx + 1,
+                            d
+                        );
+                        d
+                    } else {
+                        // Exhausted the backoff schedule — fall through
+                        // to the steady cadence and start fresh on the
+                        // next failure cluster.
+                        eprintln!(
+                            "[closedmesh] runtime upgrade: failed and backoff exhausted; \
+                             sleeping {:?}",
+                            RUNTIME_UPGRADE_INTERVAL
+                        );
+                        backoff_idx = None;
+                        RUNTIME_UPGRADE_INTERVAL
+                    }
+                }
+            };
+            std::thread::sleep(next_sleep);
         }
     });
 }
 
-/// Single upgrade attempt. Returns the path of the new binary if we
-/// successfully upgraded, `None` otherwise (no new version, network
-/// failure, verification failure — anything we can't recover from
-/// transparently).
+/// Single upgrade attempt. The three-way return distinguishes "we
+/// upgraded" from "nothing to do" from "we tried and failed", which
+/// the loop uses to pick the right sleep duration. Before 0.1.41 we
+/// collapsed the latter two into `None` and slept the same 6 hours
+/// either way — which is why a single 13:41 hiccup left a user stuck
+/// on v0.65.6 with no second attempt until 19:41.
 ///
 /// Strategy:
 ///   1. Read installed version (`closedmesh --version`).
 ///   2. Read latest release tag (GitHub redirect probe).
-///   3. If installed >= latest, no-op.
+///   3. If installed >= latest, return [`UpgradeOutcome::UpToDate`].
 ///   4. Download tarball into a sibling staging dir on the same
 ///      filesystem as the install path (so the final move is rename,
 ///      not copy).
@@ -437,13 +518,24 @@ fn spawn_runtime_upgrade_loop(bin: PathBuf) {
 ///   9. Restart the service. On macOS also re-run the launchd self-heal
 ///      so any new flags the new version supports get into the plist.
 ///
-/// Any failure mid-flight aborts the swap and leaves the old binary in
-/// place — strictly safer than ending up with a half-installed runtime.
-fn try_upgrade_runtime(bin: &Path) -> Option<PathBuf> {
-    let installed = installed_runtime_version(bin)?;
-    let latest = latest_runtime_version()?;
+/// Any failure mid-flight aborts the swap, leaves the old binary in
+/// place, and returns [`UpgradeOutcome::Failed`] so the caller retries
+/// soon instead of waiting the full steady-state interval.
+fn try_upgrade_runtime(bin: &Path) -> UpgradeOutcome {
+    let Some(installed) = installed_runtime_version(bin) else {
+        eprintln!(
+            "[closedmesh] runtime upgrade: could not read installed version from {}",
+            bin.display()
+        );
+        return UpgradeOutcome::Failed;
+    };
+    let Some(latest) = latest_runtime_version() else {
+        // `latest_runtime_version` already logs the specific failure
+        // mode (DNS, redirect parse, etc).
+        return UpgradeOutcome::Failed;
+    };
     if !version_lt(&installed, &latest) {
-        return None;
+        return UpgradeOutcome::UpToDate;
     }
     eprintln!(
         "[closedmesh] runtime upgrade available: {} -> {}; staging download",
@@ -451,15 +543,33 @@ fn try_upgrade_runtime(bin: &Path) -> Option<PathBuf> {
         fmt_version(&latest),
     );
 
-    let asset = runtime_asset_name()?;
-    let dest = runtime_install_path()?;
-    let parent = dest.parent()?;
+    let Some(asset) = runtime_asset_name() else {
+        eprintln!(
+            "[closedmesh] runtime upgrade: no published asset for this OS/arch; \
+             skipping (this is a build-time configuration, not a transient failure)"
+        );
+        // Not really `Failed` in the retry-soon sense — there's nothing
+        // for us to retry. But the steady-state cadence is the right
+        // place for unsupported platforms too, so map to UpToDate.
+        return UpgradeOutcome::UpToDate;
+    };
+    let Some(dest) = runtime_install_path() else {
+        eprintln!("[closedmesh] runtime upgrade: could not resolve install path");
+        return UpgradeOutcome::Failed;
+    };
+    let Some(parent) = dest.parent() else {
+        eprintln!(
+            "[closedmesh] runtime upgrade: install path {} has no parent",
+            dest.display()
+        );
+        return UpgradeOutcome::Failed;
+    };
 
     let stage_dir = parent.join(format!(".closedmesh.upgrade-{}", fmt_version(&latest)));
     let _ = std::fs::remove_dir_all(&stage_dir);
     if let Err(e) = std::fs::create_dir_all(&stage_dir) {
         eprintln!("[closedmesh] runtime upgrade: mkdir staging failed: {e}");
-        return None;
+        return UpgradeOutcome::Failed;
     }
 
     let url = format!("{RUNTIME_RELEASE_BASE}/{asset}");
@@ -473,7 +583,7 @@ fn try_upgrade_runtime(bin: &Path) -> Option<PathBuf> {
         Err(e) => {
             eprintln!("[closedmesh] runtime upgrade: download {url} failed: {e}");
             let _ = std::fs::remove_dir_all(&stage_dir);
-            return None;
+            return UpgradeOutcome::Failed;
         }
     };
 
@@ -483,13 +593,13 @@ fn try_upgrade_runtime(bin: &Path) -> Option<PathBuf> {
         Err(e) => {
             eprintln!("[closedmesh] runtime upgrade: create {} failed: {e}", archive.display());
             let _ = std::fs::remove_dir_all(&stage_dir);
-            return None;
+            return UpgradeOutcome::Failed;
         }
     };
     if let Err(e) = std::io::copy(&mut resp.into_reader(), &mut tmp_file) {
         eprintln!("[closedmesh] runtime upgrade: stream failed: {e}");
         let _ = std::fs::remove_dir_all(&stage_dir);
-        return None;
+        return UpgradeOutcome::Failed;
     }
     drop(tmp_file);
 
@@ -503,7 +613,7 @@ fn try_upgrade_runtime(bin: &Path) -> Option<PathBuf> {
     };
     if !extracted_ok {
         let _ = std::fs::remove_dir_all(&stage_dir);
-        return None;
+        return UpgradeOutcome::Failed;
     }
     let _ = std::fs::remove_file(&archive);
 
@@ -515,7 +625,7 @@ fn try_upgrade_runtime(bin: &Path) -> Option<PathBuf> {
             new_bin.display()
         );
         let _ = std::fs::remove_dir_all(&stage_dir);
-        return None;
+        return UpgradeOutcome::Failed;
     }
 
     #[cfg(unix)]
@@ -548,7 +658,7 @@ fn try_upgrade_runtime(bin: &Path) -> Option<PathBuf> {
             fmt_version(&latest),
         );
         let _ = std::fs::remove_dir_all(&stage_dir);
-        return None;
+        return UpgradeOutcome::Failed;
     }
 
     // Stop the service so launchd / SCM releases its handle on the
@@ -567,7 +677,7 @@ fn try_upgrade_runtime(bin: &Path) -> Option<PathBuf> {
         );
         let _ = std::fs::remove_dir_all(&stage_dir);
         start_service();
-        return None;
+        return UpgradeOutcome::Failed;
     }
 
     let _ = std::fs::remove_dir_all(&stage_dir);
@@ -581,7 +691,7 @@ fn try_upgrade_runtime(bin: &Path) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     repair_launchd_plist(&dest);
 
-    Some(dest)
+    UpgradeOutcome::Upgraded(dest)
 }
 
 /// Run `bin --version` and parse the first semver-shaped token. Returns
