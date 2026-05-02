@@ -687,9 +687,44 @@ fn try_upgrade_runtime(bin: &Path) -> UpgradeOutcome {
         dest.display()
     );
 
-    start_service();
+    // Bring the service back. On macOS we go straight through our own
+    // launchd routines (`bounce_launchd_agent`) — calling
+    // `closedmesh service start` here as well used to race with the
+    // `repair_launchd_plist` bounce immediately after, leaving us in a
+    // state where the agent was bootout'd but the racing bootstrap had
+    // hit EIO. The new flow:
+    //
+    //   1. `repair_launchd_plist` rewrites the plist if the binary path
+    //      / args have actually changed. If not, it would normally
+    //      short-circuit — but we *just* swapped the binary inode at
+    //      the same path, and launchd needs to restart the process to
+    //      pick that up. So we explicitly bounce regardless.
+    //
+    // On non-macOS we still go through the runtime CLI's `service
+    // start`, which delegates to systemd / SCM as appropriate.
     #[cfg(target_os = "macos")]
-    repair_launchd_plist(&dest);
+    {
+        repair_launchd_plist(&dest);
+        // Defence in depth: if `repair_launchd_plist` short-circuited
+        // because the plist content was byte-identical (binary path
+        // unchanged across the upgrade), it didn't bounce. Force it
+        // here so the new binary at `dest` actually starts running.
+        if let Some(plist_path) = launchd_plist_path() {
+            if plist_path.is_file() {
+                bounce_launchd_agent(&plist_path);
+            } else {
+                eprintln!(
+                    "[closedmesh] post-upgrade: plist {} missing, calling `service start`",
+                    plist_path.display()
+                );
+                start_service();
+            }
+        } else {
+            start_service();
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    start_service();
 
     UpgradeOutcome::Upgraded(dest)
 }
@@ -1124,18 +1159,50 @@ fn bounce_launchd_agent(plist_path: &std::path::Path) {
         .args(["bootout", &label_target])
         .output();
 
+    // Wait for launchd's async unload to actually finish before we
+    // bootstrap the same label. macOS's `launchctl bootout` returns
+    // immediately, but the underlying unload-and-cleanup is queued —
+    // a follow-up `bootstrap` issued in the next ~1s reliably fails
+    // with EIO ("Bootstrap failed: 5: Input/output error") because
+    // launchd still considers the previous instance loaded.
+    //
+    // 2s clears it on a healthy machine; we add a longer retry below
+    // for laptops under load (waking from sleep, big spotlight scan,
+    // etc.). This is the same race that left v0.65.6 → v0.65.9
+    // upgrades stranded on 0.1.42.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
     let plist_str = plist_path.display().to_string();
-    let bootstrap = Command::new("launchctl")
-        .args(["bootstrap", &target, &plist_str])
-        .output();
 
-    let failed = match &bootstrap {
-        Ok(out) => !out.status.success(),
-        Err(_) => true,
-    };
-
-    if failed {
-        let (code, detail) = match &bootstrap {
+    // Up to three bootstrap attempts spaced 0s / 3s / 5s apart. We've
+    // observed first-attempt EIO followed by clean success on attempt
+    // two; the third try is purely defence in depth for slow machines.
+    // Anything still failing after ~10s of accumulated wait is almost
+    // certainly a real plist / permissions problem rather than a race,
+    // and the `start_service` fallback below will surface it.
+    let backoff = [
+        std::time::Duration::from_secs(0),
+        std::time::Duration::from_secs(3),
+        std::time::Duration::from_secs(5),
+    ];
+    let mut last_failure: Option<(Option<i32>, String)> = None;
+    let mut succeeded = false;
+    for (i, wait) in backoff.iter().enumerate() {
+        if !wait.is_zero() {
+            std::thread::sleep(*wait);
+        }
+        let bootstrap = Command::new("launchctl")
+            .args(["bootstrap", &target, &plist_str])
+            .output();
+        match &bootstrap {
+            Ok(out) if out.status.success() => {
+                eprintln!(
+                    "[closedmesh] launchctl bootstrap succeeded (attempt {})",
+                    i + 1
+                );
+                succeeded = true;
+                break;
+            }
             Ok(out) => {
                 let msg = [
                     String::from_utf8_lossy(&out.stderr).trim().to_string(),
@@ -1145,22 +1212,31 @@ fn bounce_launchd_agent(plist_path: &std::path::Path) {
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join(" / ");
-                (out.status.code(), msg)
+                eprintln!(
+                    "[closedmesh] launchctl bootstrap attempt {} failed (exit {:?}): {msg}",
+                    i + 1,
+                    out.status.code()
+                );
+                last_failure = Some((out.status.code(), msg));
             }
-            Err(e) => (None, e.to_string()),
-        };
+            Err(e) => {
+                eprintln!(
+                    "[closedmesh] launchctl bootstrap attempt {} could not spawn: {e}",
+                    i + 1
+                );
+                last_failure = Some((None, e.to_string()));
+            }
+        }
+    }
+
+    if !succeeded {
+        let (code, detail) = last_failure.unwrap_or((None, "no attempt made".to_string()));
         eprintln!(
-            "[closedmesh] launchctl bootstrap failed (exit {:?}){} \
-             plist={} — falling back to service start",
+            "[closedmesh] launchctl bootstrap exhausted retries (last exit {:?}): {detail}; \
+             plist={} — falling back to `closedmesh service start`",
             code,
-            if detail.is_empty() {
-                String::new()
-            } else {
-                format!(": {detail}")
-            },
             plist_path.display(),
         );
-        // Give launchd a moment to settle after the bootout before retrying.
         std::thread::sleep(std::time::Duration::from_secs(2));
         start_service();
     }
