@@ -1,6 +1,6 @@
 [package]
 name = "closedmesh-desktop"
-version = "0.1.41"
+version = "0.1.42"
 edition = "2021"
 description = "Cross-platform desktop shell for ClosedMesh — an open peer-to-peer mesh of contributed compute serving open-weight models."
 license = "MIT OR Apache-2.0"
@@ -23,10 +23,19 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Lightweight blocking HTTP for status polling. We poll a single localhost
-# endpoint every few seconds, so blocking + small TLS stack (rustls, no
-# system OpenSSL) is the right tradeoff vs. dragging in a full async client.
-ureq = { version = "2", default-features = false, features = ["json", "rustls"] }
+# Lightweight blocking HTTP for status polling AND for the runtime
+# auto-upgrade thread (which fetches https://github.com/.../releases/latest).
+#
+# IMPORTANT: ureq 2.x's TLS feature is named `tls` (umbrella that pulls in
+# webpki + webpki-roots + rustls together). The standalone `rustls` feature
+# only enables the optional rustls *dep* without the cert plumbing, which
+# leaves ureq with no working TLS backend — every HTTPS call then dies at
+# request time with "Unknown Scheme: cannot make HTTPS request because no
+# TLS backend is configured". We hit this once 0.1.41 surfaced the desktop
+# log: every runtime upgrade since 0.1.40 had failed at the very first
+# `latest_runtime_version()` HTTPS probe with that exact message, so users
+# were silently stuck on whatever runtime they had at 0.1.40 install time.
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 
 # Single-shot env var lookups; `dirs` for resolving ~/Library/Logs etc.
 dirs = "5"
