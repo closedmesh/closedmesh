@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "closedmesh-desktop"
-version = "0.1.28"
+version = "0.1.40"
 dependencies = [
  "dirs 5.0.1",
  "serde",

@@ -2,7 +2,7 @@
 //! status, and the `closedmesh` CLI for service control. Mirrors what the
 //! deprecated Swift `MeshService.swift` did, but cross-platform.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -310,7 +310,15 @@ pub fn start_service_if_installed() {
         #[cfg(target_os = "macos")]
         spawn_self_heal_retry_loop(bin.clone());
 
-        let _ = bin;
+        // Background runtime upgrade loop. We let the service start on
+        // the existing binary first (so users get a connected mesh in
+        // the first second or two of launching the app), then check
+        // GitHub for a newer runtime release. If one exists we download,
+        // verify, atomically swap the binary, and bounce the service.
+        // This is the only way installed users actually pick up runtime
+        // bug fixes — the desktop's built-in updater only refreshes the
+        // .app/.exe, never the runtime sidecar.
+        spawn_runtime_upgrade_loop(bin);
     }
 }
 
@@ -355,6 +363,300 @@ pub fn start_service() {
 
 pub fn stop_service() {
     run_cli(&["service", "stop"]);
+}
+
+// ---------- Runtime auto-upgrade ----------------------------------------
+
+/// How long after launch to wait before the first upgrade check. Gives
+/// the freshly-started service ~30 s to reach steady state (join the
+/// mesh, settle DNS, finish loading any model) before we potentially
+/// bounce it. Long enough that the user is unlikely to be in the middle
+/// of typing something when the bounce happens.
+const RUNTIME_UPGRADE_INITIAL_DELAY: Duration = Duration::from_secs(30);
+
+/// Re-check interval after the first attempt. Six hours is long enough
+/// that we're not hammering GitHub from machines that stay open for
+/// days, but short enough that an "Elevens left their laptop on for 18
+/// hours" scenario still picks up a critical fix the same day it ships.
+const RUNTIME_UPGRADE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// GitHub "latest release" landing page. We send a no-redirect GET and
+/// read the `Location` header (e.g. `…/releases/tag/v0.65.9`) — that's
+/// 1 round-trip with no JSON parsing and no API rate limit (the
+/// authenticated `/api/repos/.../releases/latest` endpoint caps
+/// unauthenticated callers at 60 req/hr per IP, which would be tight
+/// for a multi-user network behind one NAT).
+const RUNTIME_LATEST_PAGE: &str =
+    "https://github.com/closedmesh/closedmesh-llm/releases/latest";
+
+/// Background thread: poll GitHub for a newer runtime, download and
+/// hot-swap when one appears. The first check fires after
+/// `RUNTIME_UPGRADE_INITIAL_DELAY` (so the service can finish coming
+/// up first), then every `RUNTIME_UPGRADE_INTERVAL` for the lifetime
+/// of the desktop app.
+///
+/// Why silent (no UI prompt): runtime fixes (host election, peer
+/// eviction) ship as patch releases that fix outright broken behavior
+/// on user machines. Asking permission to install them means most users
+/// stay on the broken version forever. The desktop .app updater is
+/// permission-gated because it requires a click-through installer
+/// anyway; runtime swaps are a single rename in the user's home dir
+/// and need no signing dance.
+fn spawn_runtime_upgrade_loop(bin: PathBuf) {
+    std::thread::spawn(move || {
+        let mut current = bin;
+        std::thread::sleep(RUNTIME_UPGRADE_INITIAL_DELAY);
+        loop {
+            if let Some(new_path) = try_upgrade_runtime(&current) {
+                current = new_path;
+            }
+            std::thread::sleep(RUNTIME_UPGRADE_INTERVAL);
+        }
+    });
+}
+
+/// Single upgrade attempt. Returns the path of the new binary if we
+/// successfully upgraded, `None` otherwise (no new version, network
+/// failure, verification failure — anything we can't recover from
+/// transparently).
+///
+/// Strategy:
+///   1. Read installed version (`closedmesh --version`).
+///   2. Read latest release tag (GitHub redirect probe).
+///   3. If installed >= latest, no-op.
+///   4. Download tarball into a sibling staging dir on the same
+///      filesystem as the install path (so the final move is rename,
+///      not copy).
+///   5. Extract, chmod +x, strip macOS quarantine.
+///   6. Verify the staged binary reports the version we expected. This
+///      catches "GitHub redirected us to a tag that doesn't exist yet"
+///      and "the tarball was for a different platform than we asked".
+///   7. Stop the service so the binary isn't held open (mandatory on
+///      Windows; harmless on POSIX).
+///   8. Atomic rename over the live binary.
+///   9. Restart the service. On macOS also re-run the launchd self-heal
+///      so any new flags the new version supports get into the plist.
+///
+/// Any failure mid-flight aborts the swap and leaves the old binary in
+/// place — strictly safer than ending up with a half-installed runtime.
+fn try_upgrade_runtime(bin: &Path) -> Option<PathBuf> {
+    let installed = installed_runtime_version(bin)?;
+    let latest = latest_runtime_version()?;
+    if !version_lt(&installed, &latest) {
+        return None;
+    }
+    eprintln!(
+        "[closedmesh] runtime upgrade available: {} -> {}; staging download",
+        fmt_version(&installed),
+        fmt_version(&latest),
+    );
+
+    let asset = runtime_asset_name()?;
+    let dest = runtime_install_path()?;
+    let parent = dest.parent()?;
+
+    let stage_dir = parent.join(format!(".closedmesh.upgrade-{}", fmt_version(&latest)));
+    let _ = std::fs::remove_dir_all(&stage_dir);
+    if let Err(e) = std::fs::create_dir_all(&stage_dir) {
+        eprintln!("[closedmesh] runtime upgrade: mkdir staging failed: {e}");
+        return None;
+    }
+
+    let url = format!("{RUNTIME_RELEASE_BASE}/{asset}");
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(120))
+        .redirects(8)
+        .build();
+    let resp = match agent.get(&url).call() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[closedmesh] runtime upgrade: download {url} failed: {e}");
+            let _ = std::fs::remove_dir_all(&stage_dir);
+            return None;
+        }
+    };
+
+    let archive = stage_dir.join(asset);
+    let mut tmp_file = match std::fs::File::create(&archive) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[closedmesh] runtime upgrade: create {} failed: {e}", archive.display());
+            let _ = std::fs::remove_dir_all(&stage_dir);
+            return None;
+        }
+    };
+    if let Err(e) = std::io::copy(&mut resp.into_reader(), &mut tmp_file) {
+        eprintln!("[closedmesh] runtime upgrade: stream failed: {e}");
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        return None;
+    }
+    drop(tmp_file);
+
+    let extracted_ok = if asset.ends_with(".tar.gz") {
+        extract_tar_gz(&archive, &stage_dir)
+    } else if asset.ends_with(".zip") {
+        extract_zip(&archive, &stage_dir)
+    } else {
+        eprintln!("[closedmesh] runtime upgrade: unknown archive type for {asset}");
+        false
+    };
+    if !extracted_ok {
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        return None;
+    }
+    let _ = std::fs::remove_file(&archive);
+
+    let exe_name = if cfg!(windows) { "closedmesh.exe" } else { "closedmesh" };
+    let new_bin = stage_dir.join(exe_name);
+    if !new_bin.is_file() {
+        eprintln!(
+            "[closedmesh] runtime upgrade: extraction OK but {} is missing",
+            new_bin.display()
+        );
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        return None;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&new_bin) {
+            let mut perm = meta.permissions();
+            perm.set_mode(0o755);
+            let _ = std::fs::set_permissions(&new_bin, perm);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("xattr")
+            .args(["-d", "com.apple.quarantine"])
+            .arg(&new_bin)
+            .output();
+    }
+
+    // Sanity check: the staged binary must report the version we asked
+    // for. Catches an asset-name / tag mismatch that would silently
+    // install the wrong build (e.g. an arch-mismatched binary that
+    // refuses to launch).
+    let actual = installed_runtime_version(&new_bin);
+    if actual.as_ref() != Some(&latest) {
+        eprintln!(
+            "[closedmesh] runtime upgrade: staged binary reports {:?}, expected {}; aborting",
+            actual.as_ref().map(fmt_version),
+            fmt_version(&latest),
+        );
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        return None;
+    }
+
+    // Stop the service so launchd / SCM releases its handle on the
+    // current binary. POSIX rename-over-running-binary is technically
+    // legal (the kernel keeps the old inode alive for the running
+    // process) but Windows holds an exclusive lock; doing the same
+    // dance everywhere keeps the code simple.
+    stop_service();
+    std::thread::sleep(Duration::from_secs(2));
+
+    if let Err(e) = std::fs::rename(&new_bin, &dest) {
+        eprintln!(
+            "[closedmesh] runtime upgrade: rename {} -> {} failed: {e}; restarting old service",
+            new_bin.display(),
+            dest.display()
+        );
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        start_service();
+        return None;
+    }
+
+    let _ = std::fs::remove_dir_all(&stage_dir);
+    eprintln!(
+        "[closedmesh] runtime upgraded to {} at {}",
+        fmt_version(&latest),
+        dest.display()
+    );
+
+    start_service();
+    #[cfg(target_os = "macos")]
+    repair_launchd_plist(&dest);
+
+    Some(dest)
+}
+
+/// Run `bin --version` and parse the first semver-shaped token. Returns
+/// `None` if the binary won't launch or its output doesn't contain a
+/// version number we recognize. We intentionally accept whatever
+/// `(0, 0, 0, None)` parse_semver returns here too — it's a sentinel
+/// that the comparator treats as "very old", which means a broken
+/// binary will always look upgrade-eligible.
+fn installed_runtime_version(bin: &Path) -> Option<(u32, u32, u32, Option<String>)> {
+    let out = Command::new(bin).arg("--version").output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let token = text
+        .split_whitespace()
+        .find(|t| t.chars().next().map_or(false, |c| c.is_ascii_digit()))?;
+    Some(parse_semver(token))
+}
+
+/// Probe `https://github.com/.../releases/latest` and read the
+/// `Location` header without following the redirect. The redirect
+/// target is `…/releases/tag/vX.Y.Z`, so the last path segment is the
+/// tag name. Returns `None` on any error so the upgrade loop falls
+/// through to "try again later".
+fn latest_runtime_version() -> Option<(u32, u32, u32, Option<String>)> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(10))
+        .redirects(0)
+        .build();
+    let resp = match agent.get(RUNTIME_LATEST_PAGE).call() {
+        Ok(r) => r,
+        // ureq treats 3xx-with-no-follow as a `Status` error but still
+        // hands back the response so we can read its headers.
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => {
+            eprintln!("[closedmesh] runtime upgrade: latest version probe failed: {e}");
+            return None;
+        }
+    };
+    let loc = resp.header("location")?;
+    let tag = loc.rsplit('/').next()?;
+    let stripped = tag.strip_prefix('v').unwrap_or(tag);
+    let parsed = parse_semver(stripped);
+    if parsed == (0, 0, 0, None) {
+        eprintln!("[closedmesh] runtime upgrade: could not parse latest tag {tag:?}");
+        return None;
+    }
+    Some(parsed)
+}
+
+/// Strict-less-than for our `(major, minor, patch, pre)` tuples.
+///
+/// Pre-release semantics follow semver §11: `1.2.3-rc < 1.2.3`. We
+/// don't try to be clever with rc1 vs rc2 ordering — string comparison
+/// is good enough for the rc1/rc2/beta1 tags we actually publish, and
+/// "different pre-release strings on the same release" is rare enough
+/// that we'd rather bias toward not auto-upgrading in that edge case.
+fn version_lt(a: &(u32, u32, u32, Option<String>), b: &(u32, u32, u32, Option<String>)) -> bool {
+    match (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => match (&a.3, &b.3) {
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (Some(p_a), Some(p_b)) => p_a < p_b,
+            (None, None) => false,
+        },
+    }
+}
+
+fn fmt_version(v: &(u32, u32, u32, Option<String>)) -> String {
+    let base = format!("{}.{}.{}", v.0, v.1, v.2);
+    match &v.3 {
+        Some(pre) => format!("{base}-{pre}"),
+        None => base,
+    }
 }
 
 // ---------- Launchd self-healing (macOS) --------------------------------

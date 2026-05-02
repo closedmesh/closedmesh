@@ -237,7 +237,7 @@ function NodeCard({
                 }`}
                 title={
                   isOutdated
-                    ? `Outdated — latest in this mesh is v${latestVersion}.`
+                    ? `Running v${node.version} — latest is v${latestVersion}. The desktop app self-upgrades the runtime in the background.`
                     : `Runtime v${node.version}`
                 }
               >
@@ -349,7 +349,7 @@ function IssueNodeRow({
           }`}
           title={
             isOutdated
-              ? `Outdated — latest in this mesh is v${latestVersion}. Update this machine.`
+              ? `Running v${node.version} — latest in this mesh is v${latestVersion}. The desktop app auto-upgrades the runtime within ~6 hours of launch, so this should self-heal soon.`
               : `Runtime v${node.version}`
           }
         >

@@ -71,6 +71,10 @@ Current version: check `desktop/Cargo.toml`.
 
 ### Runtime binary (closedmesh-llm)
 
+**Auto-update behavior** (added in desktop v0.1.40): the desktop app now self-upgrades the runtime binary in the background. On launch, after a 30 s settle delay, `spawn_runtime_upgrade_loop` (in `desktop/src/mesh.rs`) probes `https://github.com/closedmesh/closedmesh-llm/releases/latest` (no-redirect GET, reads `Location` header → tag → version), and if installed < latest it downloads the asset, verifies it via `--version`, stops the service, atomically renames the binary, and restarts. Re-checks every 6 h. Silent — no UI prompt, because runtime fixes are the kind of thing users need but won't manually update.
+
+This means **shipping a runtime release is the actual fix-distribution mechanism for installed users** — within 6 h of launch they get it. Desktop app updates are still click-through-installer because we lack signing infra.
+
 Releases are triggered by **`workflow_dispatch`** — NOT a tag push (the workflow creates the tag itself).
 
 ```bash
