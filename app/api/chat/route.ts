@@ -90,6 +90,41 @@ export async function OPTIONS(req: Request) {
   return preflightResponse(req);
 }
 
+/**
+ * Translate runtime errors into single, user-readable lines.
+ *
+ * The default AI SDK error message for 5xx looks like
+ * `Failed after 3 attempts. Last error: APICallError: Too Many Requests`,
+ * which terrifies users and tells them nothing actionable. The runtime has
+ * structured 503 reasons we can pluck out (`no_host_for_model`,
+ * `no_capable_node`, etc.) — we surface those cleanly instead.
+ */
+function friendlyChatError(error: unknown): string {
+  const fallback =
+    "The mesh couldn't serve that request. The hosting peer may be busy, restarting, or temporarily offline. Please try again in a few seconds.";
+  if (!error) return fallback;
+  const raw =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : JSON.stringify(error);
+  const lower = raw.toLowerCase();
+  if (lower.includes("no host is currently serving"))
+    return "No node in the mesh is currently hosting this model. A peer needs to start sharing it before requests can be served.";
+  if (lower.includes("no_capable_node") || lower.includes("insufficient vram"))
+    return "No node in the mesh has enough capacity to run this model right now.";
+  if (lower.includes("election in progress") || lower.includes("host down"))
+    return "The mesh is electing a new host (the previous one disappeared). Try again in 10–15 seconds.";
+  if (lower.includes("too many requests") || lower.includes("rate"))
+    return "The mesh is at capacity right now. Try again in a few seconds.";
+  if (lower.includes("timeout") || lower.includes("timed out"))
+    return "The hosting peer didn't respond in time. It may be loading the model — try again in a few seconds.";
+  if (lower.includes("503") || lower.includes("unavailable"))
+    return "The model is temporarily unavailable on the mesh. Try again in a few seconds.";
+  return fallback;
+}
+
 export async function POST(req: Request) {
   const body = (await req.json()) as {
     messages: UIMessage[];
@@ -102,7 +137,20 @@ export async function POST(req: Request) {
     model: closedmesh.chatModel(modelId),
     system: SYSTEM_PROMPT,
     messages: convertToModelMessages(body.messages),
+    // The AI SDK retries up to 2x on 5xx by default. For a peer-to-peer
+    // mesh this is actively harmful: a 503 from the runtime almost always
+    // means "no host elected" or "host saturated", neither of which is
+    // resolved by hammering it 200ms later. Worse, the retries can trip
+    // the entry node's per-IP rate limit, turning a clean 503 into a
+    // 429 and confusing the actual diagnosis. One attempt; let the user
+    // (or chat UI) decide whether to retry.
+    maxRetries: 0,
   });
 
-  return applyCors(req, result.toUIMessageStreamResponse());
+  return applyCors(
+    req,
+    result.toUIMessageStreamResponse({
+      onError: friendlyChatError,
+    }),
+  );
 }
