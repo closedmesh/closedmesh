@@ -48,13 +48,18 @@ export type NodeDisplayState = {
  * The **label** distinguishes activity:
  *   - "Serving"  — actively processing an inference request now
  *   - "Ready"    — model loaded, waiting for requests
- *   - "Loading"  — model being loaded into VRAM
+ *   - "Loading"  — model being loaded into VRAM (NOT serveable yet — amber)
  *   - "Sharing"  — connected and contributing capacity (no model loaded
  *                  locally yet, but the GPU is available to the mesh)
  *   - "Offline"  — not reachable
  *
- * Only OFFLINE makes the dot non-green. Everything else is green because
- * everything else means "this peer is participating".
+ * Color rules:
+ *   - "Loading" is **amber**, not green — a loading node cannot serve
+ *     requests, and we used to render it the same as "Ready", which made
+ *     stuck-loading nodes (model failing to fit, runtime bug) look healthy
+ *     while every chat request 503'd.
+ *   - "Offline" is grey.
+ *   - Everything else is green.
  */
 export function nodeDisplayState(
   node: NodeSummary | null,
@@ -77,10 +82,11 @@ export function nodeDisplayState(
 
   if (node.state === "loading") {
     return {
-      dot: "bg-emerald-400",
-      badge: greenBadge,
+      dot: "bg-amber-400",
+      badge: "border-amber-400/40 bg-amber-400/10 text-amber-300",
       label: "Loading",
-      description: "Loading model into memory…",
+      description:
+        "Loading model into memory — not serving requests yet. If this persists more than a minute the model is probably failing to fit; check the runtime logs.",
     };
   }
 

@@ -83,28 +83,28 @@ function NodeCard({
   const hostname = prettyHostname(node.hostname);
   const isEntryNode = node.hostname?.startsWith("ip-");
   const cap = node.capability;
-  const isServing = node.servingModels.length > 0;
+  const isServing = node.state === "serving";
 
-  // Apply history-based smoothing: if this node was in a "good" state
-  // (Ready or Serving) within the last 30 seconds, treat a transient
-  // current "Loading" or "Idle" snapshot as the steady-state — re-elections
-  // briefly flip nodes through these intermediate states even when they're
-  // healthy.
-  const recentlyGood =
-    history?.lastGoodAt && Date.now() - history.lastGoodAt < 30_000;
-  const smoothedNode: MeshNode =
-    recentlyGood && (node.state === "loading" || node.state === "standby")
-      ? {
-          ...node,
-          // Force Ready by ensuring servingModels is non-empty if we know it
-          // was good recently. Doesn't lie about model identity — only used
-          // by nodeDisplayState to pick the color.
-          state: "standby",
-          servingModels:
-            node.servingModels.length > 0 ? node.servingModels : ["(reloading)"],
-        }
-      : node;
-  const { dot, label: stateLabel } = nodeDisplayState(smoothedNode);
+  // Honest display: show what the node is actually doing right now. We
+  // used to "smooth" loading→standby→Ready when the node had been good
+  // recently, on the theory that re-elections briefly blip nodes through
+  // these states. That assumption was wrong — a node can also get *stuck*
+  // in "loading" for minutes (model failing to fit in VRAM, runtime bug,
+  // etc.), and the smoothing made the page lie about it ("Ready · serving
+  // Qwen3" while inference 503'd because the host never finished loading).
+  // Show the real state; if the user sees "Loading 30s" that's the actual
+  // information they need.
+  const { dot, label: stateLabel } = nodeDisplayState(node);
+
+  // How long has this node been stuck in `loading`? `loadingSince` is
+  // tracked in history and reset whenever state moves to anything other
+  // than `loading`. Past ~20s it's almost certainly stuck rather than
+  // genuinely re-loading.
+  const loadingFor =
+    node.state === "loading" && history?.loadingSince
+      ? Date.now() - history.loadingSince
+      : 0;
+  const stuckLoading = loadingFor > 20_000;
 
   // "Online for Xm" when we have history. Tells the user this isn't a
   // flapping node — it's been in the mesh consistently for a while.
@@ -133,11 +133,29 @@ function NodeCard({
               {isEntryNode ? "Entry node" : hostname}
             </div>
             <div className="text-[11px] text-[var(--fg-muted)] truncate">
-              {isEntryNode
-                ? "mesh.closedmesh.com · always-on gateway"
-                : onlineFor
-                  ? `${stateLabel} · online ${onlineFor} · ${node.id.slice(0, 10)}`
-                  : `${stateLabel} · ${node.id.slice(0, 10)}`}
+              {isEntryNode ? (
+                "mesh.closedmesh.com · always-on gateway"
+              ) : (
+                <>
+                  {/* If the node is stuck loading we make it visually
+                      distinct so the user immediately sees that this peer
+                      is NOT actually serving — even though the green dot
+                      means it's connected to the mesh. */}
+                  {stuckLoading ? (
+                    <span className="text-amber-400">
+                      Stuck loading {formatDuration(loadingFor)}
+                    </span>
+                  ) : node.state === "loading" && loadingFor > 0 ? (
+                    <span className="text-amber-300">
+                      {stateLabel} {formatDuration(loadingFor)}
+                    </span>
+                  ) : (
+                    stateLabel
+                  )}
+                  {onlineFor ? ` · online ${onlineFor}` : null}
+                  {` · ${node.id.slice(0, 10)}`}
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -165,14 +183,29 @@ function NodeCard({
         </div>
       )}
 
-      {/* Models */}
+      {/* Models. While a node is in `loading`, its `servingModels` lists
+          what it's *trying* to load, not what's actually loaded — so we
+          render those as muted "loading: X" rather than as ready model
+          badges. Without this distinction the card would say "Qwen3-0.6B"
+          in the same green pill as a fully serving node, which was the
+          original "the page is lying" complaint. */}
       {node.servingModels.length > 0 ? (
         <div className="flex flex-wrap gap-2">
           {node.servingModels.map((m) => (
             <span
               key={m}
-              className="rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1 text-[11px] font-medium text-[var(--fg)]"
+              className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
+                node.state === "loading"
+                  ? "border-amber-400/30 bg-amber-400/5 text-amber-300"
+                  : "border-[var(--border)] bg-[var(--bg)] text-[var(--fg)]"
+              }`}
+              title={
+                node.state === "loading"
+                  ? "Model is being loaded into VRAM, not serveable yet"
+                  : undefined
+              }
             >
+              {node.state === "loading" ? "loading: " : ""}
               {prettyModelName(m)}
             </span>
           ))}
@@ -191,17 +224,22 @@ function NodeCard({
 // ---------------------------------------------------------------------------
 
 function SummaryBar({ status }: { status: MeshStatus }) {
-  // "Sharing" = any non-entry node that's connected to the mesh. Used to
-  // be filtered to `state === "serving"` which only counted nodes literally
-  // executing a request that millisecond — almost always 0, even on a
-  // healthy mesh — making it look like nothing was happening.
+  // "Sharing" = a non-entry node that is genuinely contributing capacity
+  // *right now*. Excludes nodes stuck in `loading` (they self-report a
+  // model as `serving_models` while still bringing it up — that's how the
+  // page used to lie about "1 node sharing GPU" while inference 503'd)
+  // and excludes pure clients that aren't serving anything.
   const totalNodes = status.nodes.filter((n) => !n.hostname?.startsWith("ip-")).length;
   const sharingNodes = status.nodes.filter(
     (n) =>
       !n.hostname?.startsWith("ip-") &&
+      n.state !== "loading" &&
+      n.state !== "unreachable" &&
+      n.state !== "offline" &&
       ((n.capability?.loadedModels?.length ?? 0) > 0 ||
         n.servingModels.length > 0 ||
-        n.state === "serving"),
+        n.state === "serving" ||
+        n.state === "standby"),
   ).length;
   const models = status.models;
 
@@ -240,20 +278,24 @@ function SummaryBar({ status }: { status: MeshStatus }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Track per-node history across polls so we don't show a healthy node as
- * "Loading" or "Idle" just because the polling instant happened to catch
- * a transient state. The mesh is constantly re-electing hosts and reloading
- * models, so a single 20s snapshot of "Loading" or "Standby" is misleading
- * — the node may have been "Ready" for the previous 5 minutes and just
- * blipped through "Loading" for 200ms during a re-election.
+ * Track per-node history across polls. Used for honest UX signals only —
+ * we explicitly do NOT smooth `state` (we used to, and it caused the page
+ * to display "Ready · serving Qwen3" for nodes that had been stuck
+ * `state="loading"` for minutes, while every chat request 503'd).
+ *
+ * Fields:
+ *   - `firstSeen`: when this node id first appeared in our polls; used to
+ *     render the "online for Xm" badge.
+ *   - `lastSeen`: most recent poll the node id appeared in; used (in
+ *     future) to grey out cards for nodes that have just dropped off.
+ *   - `loadingSince`: when state first transitioned to "loading" without
+ *     subsequently leaving it. Surfaced as "Loading 30s" on the card so
+ *     the user can see whether a node is genuinely loading or stuck.
  */
 type NodeHistory = {
-  /** First time we saw this node id since this page was opened. */
   firstSeen: number;
-  /** Last poll we saw this node id at all. */
   lastSeen: number;
-  /** Last time the node was in a "good" state (Ready or Serving). */
-  lastGoodAt: number | null;
+  loadingSince: number | null;
 };
 
 export default function StatusPage() {
@@ -273,25 +315,25 @@ export default function StatusPage() {
         const data = (await res.json()) as MeshStatus;
         if (cancelled) return;
 
-        // Record what we just saw for each node so the per-node card can
-        // distinguish "freshly joined and loading" from "been here for 5
-        // minutes and currently re-loading after an election".
+        // Record per-node history for honest UX badges (online-for, stuck
+        // loading detection). We do NOT track a "lastGoodAt" anymore —
+        // see NodeHistory comment for the bug that caused.
         const now = Date.now();
         const history = historyRef.current;
         for (const node of data.nodes) {
           const prior = history.get(node.id) ?? {
             firstSeen: now,
             lastSeen: now,
-            lastGoodAt: null,
+            loadingSince: null,
           };
-          const isGood =
-            node.state === "serving" ||
-            (node.capability?.loadedModels?.length ?? 0) > 0 ||
-            node.servingModels.length > 0;
+          const loadingSince =
+            node.state === "loading"
+              ? (prior.loadingSince ?? now)
+              : null;
           history.set(node.id, {
             firstSeen: prior.firstSeen,
             lastSeen: now,
-            lastGoodAt: isGood ? now : prior.lastGoodAt,
+            loadingSince,
           });
         }
 
@@ -374,6 +416,35 @@ export default function StatusPage() {
         {status && (
           <div className="space-y-6">
             <SummaryBar status={status} />
+
+            {/* Degraded banner: peers exist but nothing is actually
+                serveable (every peer either offline, loading, or not a
+                Host). This is the explicit "chat will fail right now"
+                signal — the page used to silently show "Ready" peers
+                while inference 503'd. */}
+            {(() => {
+              const peerNodes = status.nodes.filter(
+                (n) => !n.hostname?.startsWith("ip-"),
+              );
+              const stuckLoading = peerNodes.filter(
+                (n) => n.state === "loading",
+              ).length;
+              const noServeable =
+                peerNodes.length > 0 && status.models.length === 0;
+              if (!noServeable) return null;
+              return (
+                <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 p-4 text-[13px] text-amber-200">
+                  <div className="font-medium text-amber-300">
+                    Mesh has peers but nothing is currently serveable
+                  </div>
+                  <div className="mt-1 text-amber-200/80">
+                    {stuckLoading > 0
+                      ? `${stuckLoading} peer${stuckLoading === 1 ? " is" : "s are"} still loading their model into VRAM. Chat requests will fail until at least one peer finishes loading and is elected as Host.`
+                      : "No peer is currently elected as Host for any model. Chat requests will fail until a peer joins with a loaded model."}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Models list */}
             {status.models.length > 0 && (

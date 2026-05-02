@@ -234,19 +234,51 @@ export async function OPTIONS(req: Request) {
 }
 
 /**
- * Collect all models that are actively being served across all nodes in the
- * mesh. The entry node's /v1/models only lists models it can serve locally;
- * when it runs in pure-client mode it returns an empty list even though peer
- * workers are serving. Fall back to harvesting served models from the admin
- * status payload so the public site always reflects real mesh capacity.
+ * Collect all models that are actually serveable across the mesh right now.
+ *
+ * Two sources of truth, in order:
+ *   1. The entry node's `/v1/models` — this is the real, route-tested list.
+ *      If a model shows up here, the entry node has at least one live peer
+ *      it has elected as Host for that model and can route to.
+ *   2. Fallback: peer self-reports — but ONLY counting peers that are in
+ *      a usable state. A peer with `state="loading"` is NOT usable; the
+ *      runtime returns "model not currently available" if you actually
+ *      try to route to it. Including loading peers in this list was the
+ *      bug that made the public status page say "1 model available" when
+ *      every inference request 503'd, because Elevens advertised Qwen3 in
+ *      its self-report while being stuck loading it.
+ *
+ * "Usable" means: the peer is a Host (so it owns the routing for the
+ * model) AND its state is not `loading` / `unreachable` / `client`. This
+ * matches how the runtime's router actually picks targets, so the public
+ * "N models available" number now equals the number of models a chat
+ * request would actually find a host for.
  */
 function modelsFromRuntime(rt: RuntimeStatus | null, v1Models: string[]): string[] {
   if (v1Models.length > 0) return v1Models;
   if (!rt) return [];
   const seen = new Set<string>();
-  for (const m of [...(rt.serving_models ?? []), ...(rt.hosted_models ?? [])]) seen.add(m);
+  const usable = (state: string | undefined) =>
+    state !== "loading" &&
+    state !== "unreachable" &&
+    state !== "client" &&
+    state !== "offline";
+
+  if (usable(rt.node_state)) {
+    for (const m of [...(rt.serving_models ?? []), ...(rt.hosted_models ?? [])]) {
+      seen.add(m);
+    }
+  }
   for (const peer of rt.peers ?? []) {
-    for (const m of [...(peer.serving_models ?? []), ...(peer.hosted_models ?? [])]) seen.add(m);
+    if (!usable(peer.state)) continue;
+    // Self-reported `serving_models` is only meaningful when the peer
+    // claims a Host role — Worker peers list the host's models too and
+    // we'd otherwise double-count phantoms.
+    const isHost = (peer.role ?? "").toLowerCase().startsWith("host");
+    if (!isHost && (peer.hosted_models?.length ?? 0) === 0) continue;
+    for (const m of [...(peer.serving_models ?? []), ...(peer.hosted_models ?? [])]) {
+      seen.add(m);
+    }
   }
   return [...seen];
 }
