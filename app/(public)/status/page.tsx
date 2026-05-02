@@ -236,7 +236,7 @@ function IssueNodeRow({
   node,
   history,
 }: {
-  node: MeshNode;
+  node: MeshNode & { _vanished?: boolean };
   history?: NodeHistory;
 }) {
   const hostname = prettyHostname(node.hostname);
@@ -247,12 +247,9 @@ function IssueNodeRow({
   // We deliberately do NOT show "joined Xs ago" here. Our `firstSeen`
   // is when this *page session* first learned about the peer, not when
   // the peer actually joined the mesh — we'd be implying a fresh arrival
-  // every time the user opened a new tab against a long-stuck peer, which
-  // is its own kind of dishonesty. The "loading X" duration below is
-  // tracked from when *we* started seeing the peer in `loading`, but
-  // that's framed as "loading for X" not "joined X ago" so the meaning
-  // (a duration of stuckness) is at least accurate.
+  // every time the user opened a new tab against a long-stuck peer.
   const reason = (() => {
+    if (node._vanished) return "no longer responding";
     if (node.state === "loading") {
       if (loadingFor > 60_000) return `stuck loading for ${formatDuration(loadingFor)}+`;
       if (loadingFor > 20_000) return `stuck loading ${formatDuration(loadingFor)}`;
@@ -264,15 +261,12 @@ function IssueNodeRow({
     return node.state;
   })();
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-400/15 bg-amber-400/[0.03] px-4 py-2.5 text-[12px]">
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg)]/40 px-3 py-2 text-[12px]">
       <div className="flex items-center gap-2.5 min-w-0">
-        <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-amber-400/70" />
-        <span className="truncate font-medium text-[var(--fg)]">{hostname}</span>
-        <span className="truncate text-amber-400/90">· {reason}</span>
+        <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--fg-muted)]/60" />
+        <span className="truncate font-medium text-[var(--fg)]/85">{hostname}</span>
+        <span className="truncate text-[var(--fg-muted)]">· {reason}</span>
       </div>
-      <span className="flex-shrink-0 text-[var(--fg-muted)]">
-        not contributing
-      </span>
     </div>
   );
 }
@@ -378,6 +372,10 @@ export default function StatusPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState(false);
   const historyRef = useRef<Map<string, NodeHistory>>(new Map());
+  // Most recent snapshot we saw for each node id. Lets us keep rendering
+  // a node for ~30s after it vanishes from the entry node's view, so a
+  // flapping peer doesn't cause cards/counts to flicker in and out.
+  const lastSnapshotByIdRef = useRef<Map<string, MeshNode>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -391,10 +389,12 @@ export default function StatusPage() {
         if (cancelled) return;
 
         // Record per-node history for honest UX badges (online-for, stuck
-        // loading detection, "have we ever seen this node actually work?").
-        // We deliberately do NOT smooth state — see NodeHistory comment.
+        // loading detection, "have we ever seen this node actually work?")
+        // and snapshot the current state so we can keep rendering
+        // briefly-vanished peers across polling gaps.
         const now = Date.now();
         const history = historyRef.current;
+        const lastSnapshot = lastSnapshotByIdRef.current;
         for (const node of data.nodes) {
           const prior = history.get(node.id) ?? {
             firstSeen: now,
@@ -421,6 +421,19 @@ export default function StatusPage() {
             loadingSince,
             everUseful: prior.everUseful || isUsefulNow,
           });
+          lastSnapshot.set(node.id, node);
+        }
+
+        // Drop snapshots for peers we haven't seen in over 60s. The
+        // render-time grace window is 30s but we keep the snapshot
+        // around a bit longer so a peer that briefly comes back inside
+        // the window doesn't get a fresh history. After this we treat
+        // them as truly gone.
+        for (const [id, h] of history.entries()) {
+          if (now - h.lastSeen > 60_000) {
+            history.delete(id);
+            lastSnapshot.delete(id);
+          }
         }
 
         setStatus(data);
@@ -444,19 +457,27 @@ export default function StatusPage() {
     };
   }, []);
 
-  // Categorize nodes:
-  //   - "issues": peers (not the entry node) that have NEVER been observed
-  //     in a useful state since this page opened, AND are currently in a
-  //     non-useful state for long enough that it can't just be "we caught
-  //     them mid-startup". A 90s-old peer that has been `state="loading"`
-  //     the entire time is functionally broken and shouldn't get a full
-  //     participating-peer card alongside actually-serving nodes.
-  //   - "working": everything else. Includes peers that are currently in
-  //     a transient bad state but have been useful before in this session
-  //     (so we don't yank them around as they re-elect).
+  // Categorize nodes for rendering. Two design goals:
   //
-  // Both lists are then sorted with entry-node last, serving first.
+  //   1. The main "Connected nodes" list should only show machines that are
+  //      actually useful — nothing that's just sitting in `loading`. Showing
+  //      a never-served peer alongside a healthy one was the original lie.
+  //
+  //   2. Disappearance/reappearance of unstable peers must NOT cause
+  //      visible flicker. We keep nodes in the "render set" for ~30s after
+  //      we last saw them in a poll, so a peer that flaps in and out of
+  //      the entry node's view every few seconds doesn't yank cards around.
+  //
+  // Categories:
+  //   - "working": peer is currently useful, OR has been useful at some
+  //     point in this session, OR is the entry node. Rendered as a card.
+  //   - "unavailable": peer we know about but isn't currently useful and
+  //     never has been (stuck loading, unreachable, offline, or recently
+  //     vanished entirely). Rendered in a collapsed <details> at the
+  //     bottom — present in the DOM for transparency, not in the user's
+  //     face. Count is debounced via lastSeen so it doesn't flap.
   const now = Date.now();
+  const VANISH_GRACE_MS = 30_000;
   const sortNodes = (a: MeshNode, b: MeshNode) => {
     const aEntry = a.hostname?.startsWith("ip-") ? 1 : 0;
     const bEntry = b.hostname?.startsWith("ip-") ? 1 : 0;
@@ -465,33 +486,53 @@ export default function StatusPage() {
     const bServing = b.state === "serving" ? 0 : 1;
     return aServing - bServing;
   };
-  const isIssueNode = (n: MeshNode): boolean => {
+
+  // Build a render set that includes (a) every node in the current
+  // snapshot, plus (b) any node we saw recently but is missing from THIS
+  // snapshot. The (b) part is what makes flapping peers stop flickering:
+  // if a peer disappears for one poll, we still render its last-known
+  // state for up to 30s before actually dropping it. (Mutation of the
+  // ref happens in the polling callback, not during render.)
+  type RenderNode = MeshNode & { _vanished: boolean };
+  const currentNodes = status?.nodes ?? [];
+  const currentIds = new Set(currentNodes.map((n) => n.id));
+  const lastSnapshotRef = lastSnapshotByIdRef.current;
+
+  const renderNodes: RenderNode[] = [];
+  for (const n of currentNodes) {
+    renderNodes.push({ ...n, _vanished: false });
+  }
+  for (const [id, snap] of lastSnapshotRef.entries()) {
+    if (currentIds.has(id)) continue;
+    const h = historyRef.current.get(id);
+    if (!h) continue;
+    const goneFor = now - h.lastSeen;
+    if (goneFor < VANISH_GRACE_MS) {
+      renderNodes.push({ ...snap, _vanished: true });
+    }
+    // Past the grace window: ignore here. Cleanup of the ref happens
+    // inside the poll callback when we re-process the next snapshot.
+  }
+
+  const isUnavailable = (n: RenderNode): boolean => {
     if (n.hostname?.startsWith("ip-")) return false;
-    // If we've ever observed this peer doing useful work in this session
-    // (state=serving, or has actually-loaded models while not loading),
-    // keep it in the main list even if it's currently cycling through
-    // a transient bad state — re-elections cause real serving peers to
-    // briefly flip to loading and we don't want to yank cards around.
     const h = historyRef.current.get(n.id);
+    // A peer that has actually served in this session stays in the
+    // "Available machines" list even during a transient vanish — the
+    // 30s render grace handles that without yanking the card. We only
+    // demote it once the grace expires and we drop it from renderNodes
+    // entirely.
     if (h?.everUseful) return false;
-    // Otherwise: if the entry node says the peer is loading / unreachable /
-    // offline, it is NOT a "connected node" in any user-meaningful sense.
-    // We used to wait 15s before reclassifying, but a fresh page load with
-    // a permanently-stuck peer would then show that peer as a healthy
-    // participant for the first 15 seconds — which is exactly the lie the
-    // user complained about ("considering that machine HAS NEVER worked
-    // even showing it is stupid"). No grace period; if you're loading,
-    // you're in the issues section until you actually serve something.
     return (
+      n._vanished ||
       n.state === "loading" ||
       n.state === "unreachable" ||
       n.state === "offline"
     );
   };
-  const allNodes = status?.nodes ?? [];
-  const issueNodes = allNodes.filter(isIssueNode).sort(sortNodes);
-  const workingNodes = allNodes
-    .filter((n) => !isIssueNode(n))
+  const unavailableNodes = renderNodes.filter(isUnavailable).sort(sortNodes);
+  const workingNodes = renderNodes
+    .filter((n) => !isUnavailable(n))
     .sort(sortNodes);
 
   return (
@@ -548,33 +589,6 @@ export default function StatusPage() {
               }
             />
 
-            {/* Degraded banner: peers exist but nothing is actually
-                serveable. The wording deliberately uses "have not served
-                any requests" rather than "still loading" — the status
-                page used to imply that loading peers were progressing
-                toward serving when in fact some were stuck indefinitely. */}
-            {(() => {
-              const peerNodes = status.nodes.filter(
-                (n) => !n.hostname?.startsWith("ip-"),
-              );
-              const noServeable =
-                peerNodes.length > 0 && status.models.length === 0;
-              if (!noServeable) return null;
-              const issuesCount = issueNodes.length;
-              return (
-                <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 p-4 text-[13px] text-amber-200">
-                  <div className="font-medium text-amber-300">
-                    No model is serveable right now
-                  </div>
-                  <div className="mt-1 text-amber-200/80">
-                    {issuesCount > 0
-                      ? `${issuesCount} peer${issuesCount === 1 ? " is" : "s are"} connected but ${issuesCount === 1 ? "has" : "have"} never finished loading a model. Chat requests will fail until a peer joins with a loaded model and is elected as Host.`
-                      : "No peer is currently elected as Host for any model. Chat requests will fail until a peer joins with a loaded model."}
-                  </div>
-                </div>
-              );
-            })()}
-
             {/* Models list */}
             {status.models.length > 0 && (
               <div>
@@ -595,13 +609,17 @@ export default function StatusPage() {
               </div>
             )}
 
-            {/* Working nodes — entry node + peers that are useful or
-                have at least been useful at some point in this session. */}
+            {/* Working nodes — peers that are currently useful or have
+                been useful at some point in this session, plus the entry
+                node. The empty state is deliberately positive ("be the
+                first to share") rather than alarmed; users on the public
+                page don't need a technical explanation of which peer is
+                stuck where. */}
             <div>
               <div className="mb-3 text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
-                Connected nodes
+                Available machines
               </div>
-              {workingNodes.length > 0 ? (
+              {workingNodes.some((n) => !n.hostname?.startsWith("ip-")) ? (
                 <div className="space-y-3">
                   {workingNodes.map((node) => (
                     <NodeCard
@@ -612,23 +630,46 @@ export default function StatusPage() {
                   ))}
                 </div>
               ) : (
-                <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] p-5 text-center text-[12px] text-[var(--fg-muted)]">
-                  No working peers right now.
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] p-6 text-center">
+                  <div className="text-sm font-medium text-[var(--fg)]">
+                    No machines are sharing right now
+                  </div>
+                  <div className="mt-1 text-[12px] text-[var(--fg-muted)]">
+                    The mesh is up but no peer has finished loading a model.
+                    {" "}
+                    <a
+                      href="/download"
+                      className="text-[var(--accent)] hover:underline"
+                    >
+                      Be the first to share →
+                    </a>
+                  </div>
                 </div>
               )}
             </div>
 
-            {/* Peers having issues — connected but have never actually
-                served anything in this session. Rendered as a separate,
-                deliberately un-celebratory section so the user can see
-                them without the page pretending they're contributing. */}
-            {issueNodes.length > 0 && (
-              <div>
-                <div className="mb-3 text-[11px] uppercase tracking-widest text-amber-400/80">
-                  Peers having issues ({issueNodes.length})
-                </div>
-                <div className="space-y-2">
-                  {issueNodes.map((node) => (
+            {/* Unavailable machines — peers that the entry node knows
+                about but that aren't currently serving (stuck loading,
+                unreachable, recently vanished). Tucked into a collapsed
+                <details> so the public page isn't dominated by broken
+                peers, but still discoverable for users who want to know
+                why their machine isn't appearing. The count is debounced
+                via VANISH_GRACE_MS so a flapping peer doesn't make the
+                disclosure label flicker. */}
+            {unavailableNodes.length > 0 && (
+              <details className="group rounded-xl border border-[var(--border)] bg-[var(--bg-elev)]/40 px-4 py-3 text-[12px]">
+                <summary className="flex cursor-pointer items-center justify-between gap-2 text-[var(--fg-muted)] [&::-webkit-details-marker]:hidden">
+                  <span>
+                    {unavailableNodes.length} machine
+                    {unavailableNodes.length === 1 ? "" : "s"} connected but
+                    not currently serving
+                  </span>
+                  <span className="text-[var(--fg-muted)] transition-transform group-open:rotate-90">
+                    ›
+                  </span>
+                </summary>
+                <div className="mt-3 space-y-2">
+                  {unavailableNodes.map((node) => (
                     <IssueNodeRow
                       key={node.id}
                       node={node}
@@ -636,7 +677,7 @@ export default function StatusPage() {
                     />
                   ))}
                 </div>
-              </div>
+              </details>
             )}
 
             {/* Footer note */}
