@@ -129,10 +129,24 @@ export function ChatExperience({
     }
   }, [messages, threadId, hydrated, isStreaming]);
 
+  // Pin to bottom on every new message and on every streaming token. We
+  // depend on `messages` (new array reference each update from useChat) plus
+  // a digest of the last message's parts so that token-by-token streaming
+  // also triggers a re-scroll. requestAnimationFrame waits for the DOM to
+  // commit the new content so `scrollHeight` reflects the just-appended
+  // markdown — without it, long messages land mid-scroll.
+  const lastMessage = messages[messages.length - 1];
+  const lastMessageDigest = lastMessage
+    ? `${lastMessage.id}:${lastMessage.parts?.length ?? 0}`
+    : "";
   useEffect(() => {
     const el = scrollerRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, status]);
+    if (!el) return;
+    const id = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(id);
+  }, [messages.length, lastMessageDigest, status]);
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
