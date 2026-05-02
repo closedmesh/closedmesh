@@ -223,13 +223,78 @@ function NodeCard({
 // Summary bar
 // ---------------------------------------------------------------------------
 
-function SummaryBar({ status }: { status: MeshStatus }) {
-  // "Sharing" = a non-entry node that is genuinely contributing capacity
-  // *right now*. Excludes nodes stuck in `loading` (they self-report a
-  // model as `serving_models` while still bringing it up — that's how the
-  // page used to lie about "1 node sharing GPU" while inference 503'd)
-  // and excludes pure clients that aren't serving anything.
-  const totalNodes = status.nodes.filter((n) => !n.hostname?.startsWith("ip-")).length;
+/**
+ * Compact, intentionally un-celebratory row for peers that are connected
+ * but have never actually served anything in this session. We render
+ * these in a separate "Peers having issues" section instead of giving
+ * them a full participating-peer card — a stuck-loading peer is not a
+ * "Connected node" in any user-meaningful sense, and showing it with the
+ * same hardware-row + model-pill layout as a healthy serving peer reads
+ * as misleading bragging.
+ */
+function IssueNodeRow({
+  node,
+  history,
+}: {
+  node: MeshNode;
+  history?: NodeHistory;
+}) {
+  const hostname = prettyHostname(node.hostname);
+  const loadingFor =
+    node.state === "loading" && history?.loadingSince
+      ? Date.now() - history.loadingSince
+      : 0;
+  const onlineFor = history
+    ? formatDuration(Date.now() - history.firstSeen)
+    : null;
+  const reason = (() => {
+    if (node.state === "loading") {
+      return loadingFor > 0
+        ? `stuck loading ${formatDuration(loadingFor)}`
+        : "loading";
+    }
+    if (node.state === "unreachable") return "unreachable from entry node";
+    if (node.state === "offline") return "offline";
+    return node.state;
+  })();
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-400/15 bg-amber-400/[0.03] px-4 py-2.5 text-[12px]">
+      <div className="flex items-center gap-2.5 min-w-0">
+        <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-amber-400/70" />
+        <span className="truncate font-medium text-[var(--fg)]">{hostname}</span>
+        <span className="truncate text-amber-400/90">· {reason}</span>
+        {onlineFor && (
+          <span className="truncate text-[var(--fg-muted)]">
+            · joined {onlineFor} ago
+          </span>
+        )}
+      </div>
+      <span className="flex-shrink-0 text-[var(--fg-muted)]">
+        hasn&apos;t served any requests
+      </span>
+    </div>
+  );
+}
+
+function SummaryBar({
+  status,
+  workingPeerCount,
+}: {
+  status: MeshStatus;
+  /**
+   * Non-entry peers that are either currently useful or have been at some
+   * point this session — i.e. NOT counted as "having issues". Used as
+   * the "machines" headline number so the summary matches the cards
+   * shown below: machines == cards in the "Connected nodes" section.
+   */
+  workingPeerCount: number;
+}) {
+  // "Sharing" = a non-entry node genuinely contributing capacity *right
+  // now*. Excludes nodes stuck in `loading` (they self-report a model in
+  // `serving_models` while still bringing it up — that's how the page
+  // used to claim "1 node sharing GPU" while inference 503'd) and excludes
+  // pure clients that aren't serving anything.
+  const totalNodes = workingPeerCount;
   const sharingNodes = status.nodes.filter(
     (n) =>
       !n.hostname?.startsWith("ip-") &&
@@ -291,11 +356,20 @@ function SummaryBar({ status }: { status: MeshStatus }) {
  *   - `loadingSince`: when state first transitioned to "loading" without
  *     subsequently leaving it. Surfaced as "Loading 30s" on the card so
  *     the user can see whether a node is genuinely loading or stuck.
+ *   - `everUseful`: true once we've observed this node in a state that
+ *     could actually serve a request (state=serving, OR has loaded models
+ *     and isn't loading). Used to demote peers that have *never* served
+ *     anything in this session into a separate "having issues" section,
+ *     instead of giving them a full participating-peer card. A node that
+ *     joined 90 seconds ago and has been stuck loading the entire time
+ *     is functionally broken; treating it the same as a healthy serving
+ *     peer in the UI was the user-visible lie.
  */
 type NodeHistory = {
   firstSeen: number;
   lastSeen: number;
   loadingSince: number | null;
+  everUseful: boolean;
 };
 
 export default function StatusPage() {
@@ -316,8 +390,8 @@ export default function StatusPage() {
         if (cancelled) return;
 
         // Record per-node history for honest UX badges (online-for, stuck
-        // loading detection). We do NOT track a "lastGoodAt" anymore —
-        // see NodeHistory comment for the bug that caused.
+        // loading detection, "have we ever seen this node actually work?").
+        // We deliberately do NOT smooth state — see NodeHistory comment.
         const now = Date.now();
         const history = historyRef.current;
         for (const node of data.nodes) {
@@ -325,15 +399,26 @@ export default function StatusPage() {
             firstSeen: now,
             lastSeen: now,
             loadingSince: null,
+            everUseful: false,
           };
           const loadingSince =
             node.state === "loading"
               ? (prior.loadingSince ?? now)
               : null;
+          // "Useful" = could actually serve a request right now. Loading
+          // peers don't qualify even if they advertise serving_models —
+          // that field lists what they're trying to load, not what's
+          // actually loaded.
+          const isUsefulNow =
+            node.state === "serving" ||
+            (node.state !== "loading" &&
+              ((node.capability?.loadedModels?.length ?? 0) > 0 ||
+                node.servingModels.length > 0));
           history.set(node.id, {
             firstSeen: prior.firstSeen,
             lastSeen: now,
             loadingSince,
+            everUseful: prior.everUseful || isUsefulNow,
           });
         }
 
@@ -358,17 +443,47 @@ export default function StatusPage() {
     };
   }, []);
 
-  // Sort nodes: entry node last, serving nodes first
-  const sortedNodes = status
-    ? [...status.nodes].sort((a, b) => {
-        const aEntry = a.hostname?.startsWith("ip-") ? 1 : 0;
-        const bEntry = b.hostname?.startsWith("ip-") ? 1 : 0;
-        if (aEntry !== bEntry) return aEntry - bEntry;
-        const aServing = a.servingModels.length > 0 ? 0 : 1;
-        const bServing = b.servingModels.length > 0 ? 0 : 1;
-        return aServing - bServing;
-      })
-    : [];
+  // Categorize nodes:
+  //   - "issues": peers (not the entry node) that have NEVER been observed
+  //     in a useful state since this page opened, AND are currently in a
+  //     non-useful state for long enough that it can't just be "we caught
+  //     them mid-startup". A 90s-old peer that has been `state="loading"`
+  //     the entire time is functionally broken and shouldn't get a full
+  //     participating-peer card alongside actually-serving nodes.
+  //   - "working": everything else. Includes peers that are currently in
+  //     a transient bad state but have been useful before in this session
+  //     (so we don't yank them around as they re-elect).
+  //
+  // Both lists are then sorted with entry-node last, serving first.
+  const now = Date.now();
+  const sortNodes = (a: MeshNode, b: MeshNode) => {
+    const aEntry = a.hostname?.startsWith("ip-") ? 1 : 0;
+    const bEntry = b.hostname?.startsWith("ip-") ? 1 : 0;
+    if (aEntry !== bEntry) return aEntry - bEntry;
+    const aServing = a.state === "serving" ? 0 : 1;
+    const bServing = b.state === "serving" ? 0 : 1;
+    return aServing - bServing;
+  };
+  const isIssueNode = (n: MeshNode): boolean => {
+    if (n.hostname?.startsWith("ip-")) return false;
+    const h = historyRef.current.get(n.id);
+    if (!h) return false;
+    if (h.everUseful) return false;
+    const observedFor = now - h.firstSeen;
+    const isBadState =
+      n.state === "loading" ||
+      n.state === "unreachable" ||
+      n.state === "offline";
+    // Give brand-new peers 15s before classifying as an issue — joining
+    // the mesh involves a real loading step and we don't want every fresh
+    // peer to flash through the issues list on its way to ready.
+    return isBadState && observedFor > 15_000;
+  };
+  const allNodes = status?.nodes ?? [];
+  const issueNodes = allNodes.filter(isIssueNode).sort(sortNodes);
+  const workingNodes = allNodes
+    .filter((n) => !isIssueNode(n))
+    .sort(sortNodes);
 
   return (
     <div className="flex min-h-dvh flex-col bg-[var(--bg)] text-[var(--fg)]">
@@ -415,31 +530,36 @@ export default function StatusPage() {
         {/* Content */}
         {status && (
           <div className="space-y-6">
-            <SummaryBar status={status} />
+            <SummaryBar
+              status={status}
+              workingPeerCount={
+                workingNodes.filter(
+                  (n) => !n.hostname?.startsWith("ip-"),
+                ).length
+              }
+            />
 
             {/* Degraded banner: peers exist but nothing is actually
-                serveable (every peer either offline, loading, or not a
-                Host). This is the explicit "chat will fail right now"
-                signal — the page used to silently show "Ready" peers
-                while inference 503'd. */}
+                serveable. The wording deliberately uses "have not served
+                any requests" rather than "still loading" — the status
+                page used to imply that loading peers were progressing
+                toward serving when in fact some were stuck indefinitely. */}
             {(() => {
               const peerNodes = status.nodes.filter(
                 (n) => !n.hostname?.startsWith("ip-"),
               );
-              const stuckLoading = peerNodes.filter(
-                (n) => n.state === "loading",
-              ).length;
               const noServeable =
                 peerNodes.length > 0 && status.models.length === 0;
               if (!noServeable) return null;
+              const issuesCount = issueNodes.length;
               return (
                 <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 p-4 text-[13px] text-amber-200">
                   <div className="font-medium text-amber-300">
-                    Mesh has peers but nothing is currently serveable
+                    No model is serveable right now
                   </div>
                   <div className="mt-1 text-amber-200/80">
-                    {stuckLoading > 0
-                      ? `${stuckLoading} peer${stuckLoading === 1 ? " is" : "s are"} still loading their model into VRAM. Chat requests will fail until at least one peer finishes loading and is elected as Host.`
+                    {issuesCount > 0
+                      ? `${issuesCount} peer${issuesCount === 1 ? " is" : "s are"} connected but ${issuesCount === 1 ? "has" : "have"} never finished loading a model. Chat requests will fail until a peer joins with a loaded model and is elected as Host.`
                       : "No peer is currently elected as Host for any model. Chat requests will fail until a peer joins with a loaded model."}
                   </div>
                 </div>
@@ -466,21 +586,49 @@ export default function StatusPage() {
               </div>
             )}
 
-            {/* Node cards */}
+            {/* Working nodes — entry node + peers that are useful or
+                have at least been useful at some point in this session. */}
             <div>
               <div className="mb-3 text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
                 Connected nodes
               </div>
-              <div className="space-y-3">
-                {sortedNodes.map((node) => (
-                  <NodeCard
-                    key={node.id}
-                    node={node}
-                    history={historyRef.current.get(node.id)}
-                  />
-                ))}
-              </div>
+              {workingNodes.length > 0 ? (
+                <div className="space-y-3">
+                  {workingNodes.map((node) => (
+                    <NodeCard
+                      key={node.id}
+                      node={node}
+                      history={historyRef.current.get(node.id)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] p-5 text-center text-[12px] text-[var(--fg-muted)]">
+                  No working peers right now.
+                </div>
+              )}
             </div>
+
+            {/* Peers having issues — connected but have never actually
+                served anything in this session. Rendered as a separate,
+                deliberately un-celebratory section so the user can see
+                them without the page pretending they're contributing. */}
+            {issueNodes.length > 0 && (
+              <div>
+                <div className="mb-3 text-[11px] uppercase tracking-widest text-amber-400/80">
+                  Peers having issues ({issueNodes.length})
+                </div>
+                <div className="space-y-2">
+                  {issueNodes.map((node) => (
+                    <IssueNodeRow
+                      key={node.id}
+                      node={node}
+                      history={historyRef.current.get(node.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Footer note */}
             <p className="text-center text-[11px] text-[var(--fg-muted)]">
