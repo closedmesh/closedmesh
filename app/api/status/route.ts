@@ -53,6 +53,15 @@ export type NodeSummary = {
   vramGb: number;
   servingModels: string[];
   capability: NodeCapabilitySummary;
+  /**
+   * Runtime version this peer is reporting (e.g. "0.65.7"). Surfaced
+   * because outdated peers are a frequent cause of "this machine isn't
+   * working" — knowing the version is the difference between debugging
+   * "what's broken in the runtime" vs "this peer just needs to update".
+   * Null if the peer isn't reporting one (shouldn't happen on supported
+   * versions, but the local-node synth path may not have it).
+   */
+  version: string | null;
 };
 
 type Status = {
@@ -80,6 +89,7 @@ type RuntimePeer = {
   serving_models?: string[];
   hosted_models?: string[];
   capability?: RuntimeCapability;
+  version?: string;
 };
 
 type RuntimeGpu = {
@@ -101,6 +111,8 @@ type RuntimeStatus = {
   /** rc2 and earlier emit GPU info here rather than inside `capability`. */
   gpus?: RuntimeGpu[];
   peers?: RuntimePeer[];
+  /** Runtime version of THIS node (the one serving the /api/status). */
+  version?: string;
 };
 
 function summarizeCapability(cap: RuntimeCapability | undefined): NodeCapabilitySummary {
@@ -207,6 +219,7 @@ function buildNodes(rt: RuntimeStatus): NodeSummary[] {
       ...(rt.hosted_models ?? []),
     ].filter((m, i, arr) => arr.indexOf(m) === i),
     capability: summarizeCapability(inferLocalCapability(rt)),
+    version: rt.version ?? null,
   });
   for (const peer of rt.peers ?? []) {
     // Entry nodes are always-on cloud gateways, not user machines — exclude
@@ -224,6 +237,7 @@ function buildNodes(rt: RuntimeStatus): NodeSummary[] {
         ...(peer.hosted_models ?? []),
       ].filter((m, i, arr) => arr.indexOf(m) === i),
       capability: summarizeCapability(peer.capability),
+      version: peer.version ?? null,
     });
   }
   return nodes;

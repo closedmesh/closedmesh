@@ -20,6 +20,14 @@ export type NodeSummary = {
   vramGb: number;
   servingModels: string[];
   capability: NodeCapabilitySummary;
+  /**
+   * Runtime version this peer is reporting (e.g. "0.65.7"). Surfaced on
+   * status surfaces so we can immediately tell whether a misbehaving
+   * peer just needs to update vs is hitting an actual runtime bug. Null
+   * if the peer hasn't reported one (older runtimes, or local-node synth
+   * paths without the field).
+   */
+  version: string | null;
 };
 
 export type MeshStatus = {

@@ -113,6 +113,14 @@ function NodeRow({ node }: { node: NodeSummary }) {
           {isEntry
             ? "mesh.closedmesh.com · always-on gateway"
             : `${backend} · ${vram ? `${vram.toFixed(1)} GB memory` : "memory unknown"}`}
+          {/* Runtime version — same rationale as on the public status
+              page. Knowing the version is the difference between "the
+              runtime is broken" and "this peer just needs to update". */}
+          {node.version && (
+            <span className="ml-2 font-mono text-[10px] tabular-nums">
+              · v{node.version}
+            </span>
+          )}
         </div>
         {!isEntry && models.length > 0 && (
           <div className="mt-1 truncate font-mono text-[10px] text-[var(--fg-muted)]">

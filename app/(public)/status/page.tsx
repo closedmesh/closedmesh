@@ -73,12 +73,54 @@ function formatDuration(ms: number): string {
   return rem > 0 ? `${h}h ${rem}m` : `${h}h`;
 }
 
+/**
+ * Compare two semver-ish version strings ("0.65.7"). Returns -1 if a<b,
+ * 0 if equal, 1 if a>b. Tolerant of extra suffixes ("0.65.7-rc1") which
+ * are stripped before numeric comparison.
+ */
+function compareVersions(a: string, b: string): number {
+  const norm = (v: string) =>
+    v
+      .replace(/^v/, "")
+      .split(/[.-]/)
+      .map((p) => parseInt(p, 10))
+      .map((n) => (Number.isFinite(n) ? n : 0));
+  const pa = norm(a);
+  const pb = norm(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const da = pa[i] ?? 0;
+    const db = pb[i] ?? 0;
+    if (da !== db) return da < db ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Highest runtime version observed in the current snapshot. Anything
+ * below it is rendered with a small "outdated — update" hint so users
+ * with stuck peers can immediately tell whether the fix is "wait for
+ * the runtime" or "go update that machine". Computed across all nodes
+ * (working + unavailable) so even a stuck peer has something to compare
+ * against.
+ */
+function maxVersion(nodes: { version: string | null }[]): string | null {
+  let best: string | null = null;
+  for (const n of nodes) {
+    if (!n.version) continue;
+    if (!best || compareVersions(n.version, best) > 0) best = n.version;
+  }
+  return best;
+}
+
 function NodeCard({
   node,
   history,
+  latestVersion,
 }: {
   node: MeshNode;
   history?: NodeHistory;
+  latestVersion: string | null;
 }) {
   const hostname = prettyHostname(node.hostname);
   const isEntryNode = node.hostname?.startsWith("ip-");
@@ -180,6 +222,30 @@ function NodeCard({
           {cap.vramGb === 0 && cap.backend === "cpu" && (
             <span>CPU inference</span>
           )}
+          {/* Runtime version. Quietly informational for healthy peers,
+              flagged amber if outdated so users can see at a glance
+              that this peer needs to update before they go hunting for
+              other reasons it might be misbehaving. */}
+          {node.version && (() => {
+            const isOutdated =
+              !!latestVersion &&
+              compareVersions(node.version, latestVersion) < 0;
+            return (
+              <span
+                className={`font-mono text-[11px] tabular-nums ${
+                  isOutdated ? "text-amber-400" : "text-[var(--fg-muted)]"
+                }`}
+                title={
+                  isOutdated
+                    ? `Outdated — latest in this mesh is v${latestVersion}.`
+                    : `Runtime v${node.version}`
+                }
+              >
+                v{node.version}
+                {isOutdated ? " · outdated" : ""}
+              </span>
+            );
+          })()}
         </div>
       )}
 
@@ -235,19 +301,19 @@ function NodeCard({
 function IssueNodeRow({
   node,
   history,
+  latestVersion,
 }: {
   node: MeshNode & { _vanished?: boolean };
   history?: NodeHistory;
+  /** Highest runtime version observed in the mesh; used to flag this
+   *  peer as outdated if it's running an older build. */
+  latestVersion: string | null;
 }) {
   const hostname = prettyHostname(node.hostname);
   const loadingFor =
     node.state === "loading" && history?.loadingSince
       ? Date.now() - history.loadingSince
       : 0;
-  // We deliberately do NOT show "joined Xs ago" here. Our `firstSeen`
-  // is when this *page session* first learned about the peer, not when
-  // the peer actually joined the mesh — we'd be implying a fresh arrival
-  // every time the user opened a new tab against a long-stuck peer.
   const reason = (() => {
     if (node._vanished) return "no longer responding";
     if (node.state === "loading") {
@@ -260,6 +326,10 @@ function IssueNodeRow({
     if (node.state === "offline") return "offline";
     return node.state;
   })();
+  const isOutdated =
+    !!node.version &&
+    !!latestVersion &&
+    compareVersions(node.version, latestVersion) < 0;
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg)]/40 px-3 py-2 text-[12px]">
       <div className="flex items-center gap-2.5 min-w-0">
@@ -267,6 +337,26 @@ function IssueNodeRow({
         <span className="truncate font-medium text-[var(--fg)]/85">{hostname}</span>
         <span className="truncate text-[var(--fg-muted)]">· {reason}</span>
       </div>
+      {/* Version is the single most useful debug field for "why is my
+          peer stuck". Old runtimes are a frequent cause of stuck-loading
+          and host-election bugs (the v0.65.9 release fixes one such bug),
+          so calling out outdated peers explicitly turns "the mesh is
+          mysteriously broken" into "go update that machine". */}
+      {node.version && (
+        <span
+          className={`flex-shrink-0 font-mono text-[11px] tabular-nums ${
+            isOutdated ? "text-amber-400" : "text-[var(--fg-muted)]"
+          }`}
+          title={
+            isOutdated
+              ? `Outdated — latest in this mesh is v${latestVersion}. Update this machine.`
+              : `Runtime v${node.version}`
+          }
+        >
+          v{node.version}
+          {isOutdated ? " · outdated" : ""}
+        </span>
+      )}
     </div>
   );
 }
@@ -534,6 +624,10 @@ export default function StatusPage() {
   const workingNodes = renderNodes
     .filter((n) => !isUnavailable(n))
     .sort(sortNodes);
+  // Highest version observed across BOTH lists. Used to flag outdated
+  // peers in any section. Computed once per render so all rows agree
+  // on what "latest" means.
+  const latestVersion = maxVersion(renderNodes);
 
   return (
     <div className="flex min-h-dvh flex-col bg-[var(--bg)] text-[var(--fg)]">
@@ -626,6 +720,7 @@ export default function StatusPage() {
                       key={node.id}
                       node={node}
                       history={historyRef.current.get(node.id)}
+                      latestVersion={latestVersion}
                     />
                   ))}
                 </div>
@@ -674,6 +769,7 @@ export default function StatusPage() {
                       key={node.id}
                       node={node}
                       history={historyRef.current.get(node.id)}
+                      latestVersion={latestVersion}
                     />
                   ))}
                 </div>
