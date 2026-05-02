@@ -244,14 +244,20 @@ function IssueNodeRow({
     node.state === "loading" && history?.loadingSince
       ? Date.now() - history.loadingSince
       : 0;
-  const onlineFor = history
-    ? formatDuration(Date.now() - history.firstSeen)
-    : null;
+  // We deliberately do NOT show "joined Xs ago" here. Our `firstSeen`
+  // is when this *page session* first learned about the peer, not when
+  // the peer actually joined the mesh — we'd be implying a fresh arrival
+  // every time the user opened a new tab against a long-stuck peer, which
+  // is its own kind of dishonesty. The "loading X" duration below is
+  // tracked from when *we* started seeing the peer in `loading`, but
+  // that's framed as "loading for X" not "joined X ago" so the meaning
+  // (a duration of stuckness) is at least accurate.
   const reason = (() => {
     if (node.state === "loading") {
-      return loadingFor > 0
-        ? `stuck loading ${formatDuration(loadingFor)}`
-        : "loading";
+      if (loadingFor > 60_000) return `stuck loading for ${formatDuration(loadingFor)}+`;
+      if (loadingFor > 20_000) return `stuck loading ${formatDuration(loadingFor)}`;
+      if (loadingFor > 0) return `loading ${formatDuration(loadingFor)}`;
+      return "loading";
     }
     if (node.state === "unreachable") return "unreachable from entry node";
     if (node.state === "offline") return "offline";
@@ -263,14 +269,9 @@ function IssueNodeRow({
         <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-amber-400/70" />
         <span className="truncate font-medium text-[var(--fg)]">{hostname}</span>
         <span className="truncate text-amber-400/90">· {reason}</span>
-        {onlineFor && (
-          <span className="truncate text-[var(--fg-muted)]">
-            · joined {onlineFor} ago
-          </span>
-        )}
       </div>
       <span className="flex-shrink-0 text-[var(--fg-muted)]">
-        hasn&apos;t served any requests
+        not contributing
       </span>
     </div>
   );
@@ -466,18 +467,26 @@ export default function StatusPage() {
   };
   const isIssueNode = (n: MeshNode): boolean => {
     if (n.hostname?.startsWith("ip-")) return false;
+    // If we've ever observed this peer doing useful work in this session
+    // (state=serving, or has actually-loaded models while not loading),
+    // keep it in the main list even if it's currently cycling through
+    // a transient bad state — re-elections cause real serving peers to
+    // briefly flip to loading and we don't want to yank cards around.
     const h = historyRef.current.get(n.id);
-    if (!h) return false;
-    if (h.everUseful) return false;
-    const observedFor = now - h.firstSeen;
-    const isBadState =
+    if (h?.everUseful) return false;
+    // Otherwise: if the entry node says the peer is loading / unreachable /
+    // offline, it is NOT a "connected node" in any user-meaningful sense.
+    // We used to wait 15s before reclassifying, but a fresh page load with
+    // a permanently-stuck peer would then show that peer as a healthy
+    // participant for the first 15 seconds — which is exactly the lie the
+    // user complained about ("considering that machine HAS NEVER worked
+    // even showing it is stupid"). No grace period; if you're loading,
+    // you're in the issues section until you actually serve something.
+    return (
       n.state === "loading" ||
       n.state === "unreachable" ||
-      n.state === "offline";
-    // Give brand-new peers 15s before classifying as an issue — joining
-    // the mesh involves a real loading step and we don't want every fresh
-    // peer to flash through the issues list on its way to ready.
-    return isBadState && observedFor > 15_000;
+      n.state === "offline"
+    );
   };
   const allNodes = status?.nodes ?? [];
   const issueNodes = allNodes.filter(isIssueNode).sort(sortNodes);
