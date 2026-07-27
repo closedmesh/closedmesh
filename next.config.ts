@@ -47,6 +47,12 @@ const nextConfig: NextConfig = {
         source: "/install",
         destination: "/install.sh",
       },
+      // OpenAI-compatible surface: docs/treasury advertise senda.network/v1
+      // while App Router lives under /api/v1.
+      {
+        source: "/v1/:path*",
+        destination: "/api/v1/:path*",
+      },
     ];
   },
   async headers() {
