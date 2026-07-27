@@ -7,7 +7,7 @@ import { BuyPanel } from "../../components/BuyPanel";
 export const metadata: Metadata = {
   title: "API access (preview) — Senda",
   description:
-    "Paid API preview: top up an API balance with USDC on Solana, mint a ck_ key, call senda.network/v1. Free chat stays free. Request refunds for unused balance. Peer USD payouts are preview/ops-gated.",
+    "Paid API preview: top up an API balance with USDC on Solana, mint a ck_ key, call senda.network/v1. Free chat stays free. Request refunds for unused balance. Peer USD: bind wallet in desktop to request payout.",
 };
 
 /**
@@ -40,7 +40,8 @@ export default function BuyPage() {
               </Link>{" "}
               stay illustrative; paid{" "}
               <code className="text-[var(--fg)]">/v1</code> serves can accrue a
-              separate peer USD balance (payouts still preview / ops-gated). See{" "}
+              separate peer USD balance (bind wallet in the desktop app to
+              request payout). See{" "}
               <Link href="/terms" className="text-[var(--accent)] underline">
                 terms
               </Link>

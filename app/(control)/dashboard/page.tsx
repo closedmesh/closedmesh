@@ -2685,15 +2685,31 @@ function EarningsPreviewCard({
     | { phase: "ready"; credits: number; storeReady: boolean }
     | { phase: "unavailable" }
   >({ phase: "loading" });
+  const [peerUsd, setPeerUsd] = useState<
+    | { phase: "loading" }
+    | {
+        phase: "ready";
+        balanceUsd: number | null;
+        wallet: string | null;
+        minWithdrawUsd: number;
+        selfServe: boolean;
+      }
+    | { phase: "unavailable" }
+  >({ phase: "loading" });
+  const [bindBusy, setBindBusy] = useState(false);
+  const [bindStatus, setBindStatus] = useState<string | null>(null);
+  const [payoutBusy, setPayoutBusy] = useState(false);
 
   useEffect(() => {
     const peerId = self.id?.trim();
     if (!peerId) {
       setLedger({ phase: "unavailable" });
+      setPeerUsd({ phase: "unavailable" });
       return;
     }
     let cancelled = false;
     setLedger({ phase: "loading" });
+    setPeerUsd({ phase: "loading" });
     void (async () => {
       try {
         // Sidecar proxies to senda.network — local Next has no Upstash.
@@ -2716,6 +2732,32 @@ function EarningsPreviewCard({
         if (!cancelled) setLedger({ phase: "unavailable" });
       }
     })();
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/control/peer-earnings?peerId=${encodeURIComponent(peerId)}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) throw new Error(String(res.status));
+        const json = (await res.json()) as {
+          balance_usd?: number | null;
+          payout_wallet?: string | null;
+          min_withdraw_usd?: number;
+          self_serve?: boolean;
+        };
+        if (cancelled) return;
+        setPeerUsd({
+          phase: "ready",
+          balanceUsd:
+            json.balance_usd == null ? null : Number(json.balance_usd),
+          wallet: json.payout_wallet?.trim() || null,
+          minWithdrawUsd: Number(json.min_withdraw_usd ?? 10) || 10,
+          selfServe: Boolean(json.self_serve),
+        });
+      } catch {
+        if (!cancelled) setPeerUsd({ phase: "unavailable" });
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -2724,6 +2766,169 @@ function EarningsPreviewCard({
   const ledgerCredits =
     ledger.phase === "ready" && ledger.storeReady ? ledger.credits : null;
   const hasLedger = ledgerCredits != null && ledgerCredits > 0;
+
+  const startWalletBind = async () => {
+    setBindBusy(true);
+    setBindStatus(null);
+    try {
+      const chalRes = await fetch("/api/control/peer-bind/challenge", {
+        method: "POST",
+      });
+      const chal = (await chalRes.json()) as {
+        challengeId?: string;
+        timestampMs?: number;
+        error?: string;
+      };
+      if (!chalRes.ok || !chal.challengeId || !chal.timestampMs) {
+        throw new Error(chal.error || "Could not create bind challenge");
+      }
+
+      // Sign with local node key to learn full pubkey, then re-sign prove msg.
+      const probe = await fetch("/api/control/node-sign", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "senda-node-sign-probe" }),
+      });
+      const probeJson = (await probe.json()) as {
+        nodePubkeyHex?: string;
+        error?: string;
+      };
+      if (!probe.ok || !probeJson.nodePubkeyHex) {
+        throw new Error(probeJson.error || "Node key unavailable");
+      }
+
+      const proveMessage = [
+        "Senda peer bind prove",
+        `Challenge: ${chal.challengeId}`,
+        `Node: ${probeJson.nodePubkeyHex}`,
+        `Ts: ${chal.timestampMs}`,
+      ].join("\n");
+      const signed = await fetch("/api/control/node-sign", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: proveMessage }),
+      });
+      const signedJson = (await signed.json()) as {
+        nodePubkeyHex?: string;
+        signatureHex?: string;
+        error?: string;
+      };
+      if (!signed.ok || !signedJson.signatureHex || !signedJson.nodePubkeyHex) {
+        throw new Error(signedJson.error || "Node sign failed");
+      }
+
+      const proveRes = await fetch("/api/control/peer-bind/prove", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          challengeId: chal.challengeId,
+          nodePubkeyHex: signedJson.nodePubkeyHex,
+          nodeSignatureHex: signedJson.signatureHex,
+          timestampMs: chal.timestampMs,
+        }),
+      });
+      const proveJson = (await proveRes.json()) as {
+        bindUrl?: string;
+        error?: string;
+      };
+      if (!proveRes.ok) {
+        throw new Error(proveJson.error || "Node proof failed");
+      }
+      const url =
+        proveJson.bindUrl ||
+        `https://senda.network/peer-bind?c=${encodeURIComponent(chal.challengeId)}`;
+      setBindStatus("Opening browser to finish with Phantom…");
+      window.open(url, "_blank", "noreferrer");
+    } catch (err) {
+      setBindStatus(err instanceof Error ? err.message : "Bind failed");
+    } finally {
+      setBindBusy(false);
+    }
+  };
+
+  const requestPayout = async () => {
+    if (peerUsd.phase !== "ready" || !peerUsd.wallet || !self.id) return;
+    const phantom = (
+      window as unknown as {
+        solana?: {
+          signMessage(
+            m: Uint8Array,
+            d?: string,
+          ): Promise<{ signature: Uint8Array }>;
+          connect(): Promise<{ publicKey: { toBase58(): string } }>;
+        };
+      }
+    ).solana;
+    if (!phantom?.signMessage) {
+      setBindStatus(
+        "Request payout from a browser with Phantom, or wait for the next desktop wallet flow.",
+      );
+      return;
+    }
+    setPayoutBusy(true);
+    setBindStatus(null);
+    try {
+      const peerId = self.id.trim();
+      const wallet = peerUsd.wallet;
+      const timestampMs = Date.now();
+      const message = `Senda peer payout request\nPeer: ${peerId.length > 10 ? peerId.slice(0, 10) : peerId}\nWallet: ${wallet}\nTs: ${timestampMs}`;
+      const signed = await phantom.signMessage(
+        new TextEncoder().encode(message),
+        "utf8",
+      );
+      const alphabet =
+        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+      const bytes = signed.signature;
+      let zeros = 0;
+      while (zeros < bytes.length && bytes[zeros] === 0) zeros += 1;
+      const digits = [0];
+      for (let i = 0; i < bytes.length; i++) {
+        let carry = bytes[i];
+        for (let j = 0; j < digits.length; j++) {
+          carry += digits[j] << 8;
+          digits[j] = carry % 58;
+          carry = (carry / 58) | 0;
+        }
+        while (carry > 0) {
+          digits.push(carry % 58);
+          carry = (carry / 58) | 0;
+        }
+      }
+      const signatureBase58 =
+        "1".repeat(zeros) +
+        digits
+          .reverse()
+          .map((d) => alphabet[d])
+          .join("");
+
+      const res = await fetch("/api/control/peer-earnings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          peerId,
+          wallet,
+          timestampMs,
+          signatureBase58,
+        }),
+      });
+      const data = (await res.json()) as {
+        error?: string;
+        request?: { usd?: number; status?: string };
+      };
+      if (!res.ok) throw new Error(data.error || "Payout request failed");
+      setBindStatus(
+        `Payout requested: $${data.request?.usd ?? "?"} (${data.request?.status})`,
+      );
+      setPeerUsd({
+        ...peerUsd,
+        balanceUsd: 0,
+      });
+    } catch (err) {
+      setBindStatus(err instanceof Error ? err.message : "Payout failed");
+    } finally {
+      setPayoutBusy(false);
+    }
+  };
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-elev)] p-6">
@@ -2759,7 +2964,7 @@ function EarningsPreviewCard({
             {hasLedger ? (
               <>
                 Contributor credits on the public mesh (tier-weighted tokens).
-                Not cash — payouts aren&apos;t live yet.
+                Separate from peer USD below.
                 {hasLocal ? (
                   <>
                     {" "}
@@ -2808,6 +3013,63 @@ function EarningsPreviewCard({
         </ul>
       )}
 
+      {peerUsd.phase === "ready" && peerUsd.selfServe && (
+        <div className="relative mt-5 rounded-xl border border-[var(--border)] bg-[var(--bg-elev-2)] px-4 py-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--fg-muted)]">
+                Peer USD
+              </div>
+              <div className="mt-0.5 flex items-baseline gap-2">
+                <span className="text-xl font-semibold tabular-nums text-[var(--fg)]">
+                  {peerUsd.balanceUsd == null
+                    ? "—"
+                    : `$${peerUsd.balanceUsd.toFixed(2)}`}
+                </span>
+                <span className="text-[12px] text-[var(--fg-muted)]">
+                  from paid /v1 serves · min withdraw ${peerUsd.minWithdrawUsd}
+                </span>
+              </div>
+              <div className="mt-1 break-all text-[11px] text-[var(--fg-muted)]">
+                {peerUsd.wallet
+                  ? `Payout wallet ${peerUsd.wallet}`
+                  : "No payout wallet bound yet."}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={bindBusy}
+                onClick={() => void startWalletBind()}
+                className="rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-2 text-[12px] font-medium text-[var(--fg)] disabled:opacity-50"
+              >
+                {bindBusy
+                  ? "Preparing…"
+                  : peerUsd.wallet
+                    ? "Rebind wallet"
+                    : "Bind wallet"}
+              </button>
+              {peerUsd.wallet &&
+                peerUsd.balanceUsd != null &&
+                peerUsd.balanceUsd >= peerUsd.minWithdrawUsd && (
+                  <button
+                    type="button"
+                    disabled={payoutBusy}
+                    onClick={() => void requestPayout()}
+                    className="rounded-lg bg-[var(--accent)] px-3 py-2 text-[12px] font-medium text-white disabled:opacity-50"
+                  >
+                    {payoutBusy ? "Requesting…" : "Request payout"}
+                  </button>
+                )}
+            </div>
+          </div>
+          {bindStatus && (
+            <p className="mt-2 text-[12px] text-[var(--fg-muted)]" role="status">
+              {bindStatus}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }

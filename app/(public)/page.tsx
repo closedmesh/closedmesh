@@ -251,7 +251,7 @@ export default function PublicHomePage() {
               <LaneCard
                 step="Earn"
                 title="Contributor credits"
-                body="Nodes track contributor credits for tokens served. Paid /v1 mesh serves may also accrue peer USD (ops-gated payouts, not self-serve). Separate from the customer API balance."
+                body="Nodes track contributor credits for tokens served. Paid /v1 mesh serves may also accrue peer USD — bind a wallet in the desktop app to request payout. Separate from the customer API balance."
                 cta={{ label: "How credits work →", href: "/contribute#earn" }}
               />
             </div>

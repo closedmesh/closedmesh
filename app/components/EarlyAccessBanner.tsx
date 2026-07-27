@@ -5,7 +5,7 @@ import Link from "next/link";
  * Rendered above the public nav on every page that uses `PublicHeader`.
  *
  * Sets honest expectations without sounding broken: preview paid API,
- * contributor credits tracked (payouts not live), free chat stays free.
+ * contributor credits tracked, peer USD bind/payout via desktop, free chat.
  */
 export function EarlyAccessBanner() {
   return (
@@ -19,7 +19,7 @@ export function EarlyAccessBanner() {
       <Link href="/contribute" className="text-[var(--accent)] hover:underline">
         Contributor credits
       </Link>{" "}
-      tracked; peer USD may accrue on paid serves (cash payouts ops-gated, not
+      tracked; peer USD may accrue on paid serves (bind wallet in desktop to
       self-serve). Free chat stays free.{" "}
       <Link href="/security" className="text-[var(--accent)] hover:underline">
         Security →

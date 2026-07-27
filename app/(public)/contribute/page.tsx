@@ -50,7 +50,7 @@ export default function ContributePage() {
               </strong>{" "}
               — a measure of contribution, tracked in the app. Paid{" "}
               <code className="text-[var(--fg)]">/v1</code> mesh serves may also
-              accrue a separate peer USD liability (payouts ops-gated, not
+              accrue a separate peer USD liability (bind wallet in desktop for
               self-serve). Separate from the customer API balance on{" "}
               <Link href="/buy" className="text-[var(--accent)] underline">
                 /buy
