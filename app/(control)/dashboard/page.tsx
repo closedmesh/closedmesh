@@ -2749,7 +2749,7 @@ function EarningsPreviewCard({
                   : "—"}
             </span>
             <span className="text-[13px] font-medium text-[var(--fg)]">
-              {hasLedger ? "credits earned" : "tokens served"}
+              {hasLedger ? "contributor credits" : "tokens served"}
             </span>
             <span className="text-[12px] text-[var(--fg-muted)]">
               {hasLedger ? "· mesh ledger" : "· last 7 days · local"}
@@ -2758,8 +2758,8 @@ function EarningsPreviewCard({
           <div className="mt-1 text-[12px] text-[var(--fg-muted)]">
             {hasLedger ? (
               <>
-                Tier-weighted tokens attributed to this node on the public
-                mesh. Not a payout — instrumented contribution.
+                Contributor credits on the public mesh (tier-weighted tokens).
+                Not cash — payouts aren&apos;t live yet.
                 {hasLocal ? (
                   <>
                     {" "}

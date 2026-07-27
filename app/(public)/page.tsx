@@ -238,20 +238,20 @@ export default function PublicHomePage() {
               <LaneCard
                 step="Use"
                 title="Build on the network"
-                body="Point any OpenAI-compatible tool, agent, or script at the network — or just chat on senda.network. No signup for chat; your request goes to a peer, not a third-party AI provider."
-                cta={{ label: "Read the docs →", href: "/docs" }}
+                body="Chat free on senda.network, or use the paid API preview: OpenAI-compatible /v1 with a key. Your request goes to a peer, not a third-party AI provider."
+                cta={{ label: "API preview →", href: "/buy" }}
               />
               <LaneCard
                 step="Contribute"
                 title="Run a node"
-                body="Have a capable Mac or GPU box? Download the desktop app or curl the runtime. It autostarts and joins the mesh, adding capacity for everyone."
+                body="Have a capable Mac or GPU box? Download the desktop app or curl the runtime. It joins the mesh and adds capacity for everyone."
                 cta={{ label: "Contribute →", href: "/contribute" }}
               />
               <LaneCard
                 step="Earn"
-                title="Earn credits"
-                body="Contributors accumulate credits for completion tokens served to the mesh. Tracked now in the dashboard; redeemable when payouts ship. No crypto token."
-                cta={{ label: "Credits & rates →", href: "/contribute#earn" }}
+                title="Contributor credits"
+                body="Nodes accrue contributor credits for tokens served — tracked in the dashboard. Cash payouts aren’t live yet. Separate from the paid API balance."
+                cta={{ label: "How credits work →", href: "/contribute#earn" }}
               />
             </div>
           </div>

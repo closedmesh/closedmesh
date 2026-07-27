@@ -183,8 +183,8 @@ export function BuyPanel() {
       <section className="space-y-3">
         <h2 className="text-lg font-semibold tracking-tight">1. Connect wallet</h2>
         <p className="text-[14px] leading-relaxed text-[var(--fg-muted)]">
-          Your Solana address is your Senda account. Top up with USDC, then mint
-          an API key for{" "}
+          Your Solana address is your account for this preview. Top up an API
+          balance, then mint a key for{" "}
           <code className="text-[var(--fg)]">{info?.apiBase ?? "/v1"}</code>.
         </p>
         <div className="flex flex-wrap items-center gap-3">
@@ -202,33 +202,33 @@ export function BuyPanel() {
           ) : null}
           {balanceUsd != null ? (
             <span className="text-[13px] text-[var(--fg)]">
-              Balance: ${balanceUsd.toFixed(4)}
+              API balance: ${balanceUsd.toFixed(4)}
             </span>
           ) : null}
         </div>
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight">2. Send USDC</h2>
+        <h2 className="text-lg font-semibold tracking-tight">2. Top up with USDC</h2>
         {!info ? (
           <p className="text-[14px] text-[var(--fg-muted)]">Loading…</p>
         ) : !info.configured || !info.treasury ? (
           <p className="text-[14px] text-[var(--fg-muted)]">
-            Treasury not configured yet (`SENDA_SOLANA_TREASURY`). Ops can still
-            use admin-credit until the address is set.
+            Deposit address isn&apos;t live on this deployment yet. Check back
+            shortly, or ask on Discord if you&apos;re testing with us.
           </p>
         ) : (
           <>
             <p className="text-[14px] leading-relaxed text-[var(--fg-muted)]">
               Send at least{" "}
               <strong className="text-[var(--fg)]">${info.minTopupUsd}</strong>{" "}
-              USDC on Solana mainnet to:
+              USDC on Solana mainnet to this address, then sync:
             </p>
             <code className="block break-all rounded-md border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-2 font-mono text-[12px]">
               {info.treasury}
             </code>
             <p className="text-[12px] text-[var(--fg-muted)]">
-              Mint: {info.usdcMint}
+              USDC mint: {info.usdcMint}
             </p>
             <button
               type="button"
@@ -236,17 +236,18 @@ export function BuyPanel() {
               onClick={() => void syncDeposits()}
               className="rounded-md border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-2 text-[13px] font-medium disabled:opacity-40"
             >
-              I&apos;ve paid — sync deposit
+              Sync deposit
             </button>
           </>
         )}
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight">3. Mint API key</h2>
+        <h2 className="text-lg font-semibold tracking-tight">3. Create API key</h2>
         <p className="text-[14px] leading-relaxed text-[var(--fg-muted)]">
-          Sign a one-time message to create a{" "}
-          <code className="text-[var(--fg)]">ck_live_…</code> key. Shown once.
+          Sign a short message to mint a{" "}
+          <code className="text-[var(--fg)]">ck_live_…</code> key. Copy it
+          once — we only store a hash.
         </p>
         <button
           type="button"
@@ -265,11 +266,12 @@ export function BuyPanel() {
 
       {dd ? (
         <section className="space-y-2 border-t border-[var(--border)] pt-8">
-          <h2 className="text-lg font-semibold tracking-tight">Rate card</h2>
+          <h2 className="text-lg font-semibold tracking-tight">Preview rate card</h2>
           <p className="text-[14px] text-[var(--fg-muted)]">
             Daily-driver models: ${dd.prompt_usd_per_mtok.toFixed(2)} / $
-            {dd.completion_usd_per_mtok.toFixed(2)} per MTok (prompt / completion).
-            Capacity tier is higher — see docs when live.
+            {dd.completion_usd_per_mtok.toFixed(2)} per MTok (prompt /
+            completion). Capacity-tier models cost more. Rates may change while
+            this is in preview.
           </p>
         </section>
       ) : null}

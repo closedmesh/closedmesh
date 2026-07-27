@@ -15,7 +15,7 @@ const NAV_LINKS: NavLink[] = [
   { href: "/about", label: "How it works" },
   { href: "/docs", label: "Docs" },
   { href: "/status", label: "Status" },
-  { href: "/buy", label: "Buy" },
+  { href: "/buy", label: "API" },
 ];
 
 /**

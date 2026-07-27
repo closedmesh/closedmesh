@@ -5,13 +5,13 @@ import { PublicFooter } from "../../components/PublicFooter";
 import { BuyPanel } from "../../components/BuyPanel";
 
 export const metadata: Metadata = {
-  title: "Buy credits — Senda",
+  title: "API access (preview) — Senda",
   description:
-    "Top up Senda API credits with USDC on Solana. Mint a ck_ key for the OpenAI-compatible paid API.",
+    "Paid API preview: top up an API balance with USDC on Solana, mint a ck_ key, call senda.network/v1. Free chat stays free. Contributor payouts are separate and not live yet.",
 };
 
 /**
- * /buy — Phase 5.C customer credit purchase (USDC on Solana).
+ * /buy — Phase 5.C customer API balance (USDC on Solana). Preview framing.
  */
 export default function BuyPage() {
   return (
@@ -21,23 +21,30 @@ export default function BuyPage() {
         <section className="border-b border-[var(--border)]">
           <div className="mx-auto max-w-3xl px-6 py-16 sm:py-20">
             <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
-              Paid API
+              Paid API preview
             </div>
             <h1 className="mt-3 text-balance text-3xl font-semibold leading-[1.1] tracking-tight sm:text-4xl">
-              Buy credits with USDC
+              Get an API key
             </h1>
             <p className="mt-4 max-w-2xl text-pretty text-[15px] leading-relaxed text-[var(--fg-muted)]">
-              Prices are in USD. Settlement is USDC on Solana. Use your balance
-              with an OpenAI-compatible key against{" "}
-              <code className="text-[var(--fg)]">/v1/chat/completions</code>.
-              Free chat on the homepage stays free.
+              Top up an <strong className="font-medium text-[var(--fg)]">API balance</strong>{" "}
+              with USDC on Solana (prices in USD). Call the OpenAI-compatible{" "}
+              <code className="text-[var(--fg)]">/v1/chat/completions</code>{" "}
+              endpoint with a <code className="text-[var(--fg)]">ck_</code> key.
+              Homepage chat stays free — no wallet required.
+            </p>
+            <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-[var(--fg-muted)]">
+              Running a node? That&apos;s{" "}
+              <Link href="/contribute" className="text-[var(--accent)] underline">
+                contributor credits
+              </Link>
+              — tracked in the app, separate from this balance. Cash payouts
+              aren&apos;t live yet.
             </p>
             <p className="mt-3 text-[13px] text-[var(--fg-muted)]">
-              Prefer docs first?{" "}
               <Link href="/docs" className="text-[var(--accent)] underline">
-                Read the API notes
+                Developer docs →
               </Link>
-              .
             </p>
           </div>
         </section>
