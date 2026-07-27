@@ -119,6 +119,25 @@ export default function DocsPage() {
                 </tr>
                 <tr className="border-t border-[var(--border)]">
                   <td className="px-5 py-4 font-medium">
+                    Paid API
+                    <div className="text-[12px] font-normal text-[var(--fg-muted)]">
+                      USDC credits + ck_ key
+                    </div>
+                  </td>
+                  <td className="px-5 py-4 font-mono text-[12px]">
+                    https://senda.network/v1
+                  </td>
+                  <td className="px-5 py-4 text-[var(--fg-muted)]">
+                    Bearer ck_…
+                  </td>
+                  <td className="px-5 py-4">
+                    <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-300">
+                      Open — top up at /buy
+                    </span>
+                  </td>
+                </tr>
+                <tr className="border-t border-[var(--border)]">
+                  <td className="px-5 py-4 font-medium">
                     Web chat
                     <div className="text-[12px] font-normal text-[var(--fg-muted)]">
                       zero setup, not the API
@@ -139,16 +158,16 @@ export default function DocsPage() {
           </div>
 
           <p className="mt-4 max-w-2xl text-[13px] leading-relaxed text-[var(--fg-muted)]">
-            The hosted entry serves{" "}
-            <code className="font-mono">/v1/models</code> openly so you can see
-            what the mesh can run, but{" "}
-            <code className="font-mono">/v1/chat/completions</code> is
-            access-gated while monetization is built. Public API keys arrive
-            with the paid inference API —{" "}
-            <Link href="/updates" className="text-[var(--accent)] hover:underline">
-              follow the dev log
+            Buy USDC credits and mint a key at{" "}
+            <Link href="/buy" className="text-[var(--accent)] hover:underline">
+              /buy
             </Link>
-            . Until then, run a node for full programmatic access.
+            , then call{" "}
+            <code className="font-mono">senda.network/v1/chat/completions</code>.
+            The entry node{" "}
+            <code className="font-mono">entry.senda.network</code> stays
+            operator-gated; local nodes remain free for self-host. Free web
+            chat is unchanged.
           </p>
         </div>
       </section>

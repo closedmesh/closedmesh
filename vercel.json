@@ -3,6 +3,10 @@
     {
       "path": "/api/kpi-snapshot",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/account/deposit-sync",
+      "schedule": "*/5 * * * *"
     }
   ]
 }
