@@ -9,7 +9,7 @@ import { getRedis } from "./redis";
 
 const HASH_PREFIX = "senda:cust:apikey:hash";
 const BY_ACCOUNT_PREFIX = "senda:cust:apikey:by-account";
-const TTL_SEC = 365 * 24 * 3600;
+/** API keys are long-lived credentials — do not expire Redis records. */
 
 export type ApiKeyRecord = {
   accountId: string;
@@ -86,9 +86,8 @@ export async function mintApiKey(
   const redis = getRedis();
   if (redis) {
     try {
-      await redis.set(hashKey(hash), JSON.stringify(record), { ex: TTL_SEC });
+      await redis.set(hashKey(hash), JSON.stringify(record));
       await redis.sadd(accountKey(id), hash);
-      await redis.expire(accountKey(id), TTL_SEC);
       return { ok: true, plaintext, prefix, record };
     } catch (err) {
       return {
@@ -131,6 +130,38 @@ export async function resolveApiKey(
   return record;
 }
 
+export async function listApiKeys(
+  accountId: string,
+): Promise<ApiKeyRecord[]> {
+  const id = accountId.trim();
+  if (!id) return [];
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const hashes = await redis.smembers(accountKey(id));
+      const out: ApiKeyRecord[] = [];
+      for (const hash of hashes) {
+        const raw = await redis.get<string | null>(hashKey(hash));
+        if (!raw) continue;
+        const record = (
+          typeof raw === "string" ? JSON.parse(raw) : raw
+        ) as ApiKeyRecord;
+        out.push(record);
+      }
+      return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    } catch {
+      return [];
+    }
+  }
+  if (!useMemory()) return [];
+  const hashes = memory.byAccount.get(id);
+  if (!hashes) return [];
+  return [...hashes]
+    .map((h) => memory.byHash.get(h))
+    .filter((r): r is ApiKeyRecord => r != null)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+
 export async function revokeApiKey(input: {
   accountId: string;
   prefix: string;
@@ -152,7 +183,7 @@ export async function revokeApiKey(input: {
         ) as ApiKeyRecord;
         if (record.prefix !== prefix) continue;
         record.revokedAt = new Date().toISOString();
-        await redis.set(hashKey(hash), JSON.stringify(record), { ex: TTL_SEC });
+        await redis.set(hashKey(hash), JSON.stringify(record));
         return { ok: true };
       }
       return { ok: false, error: "not_found" };

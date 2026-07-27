@@ -7,6 +7,7 @@ type TreasuryInfo = {
   treasury: string | null;
   usdcMint: string;
   minTopupUsd: number;
+  minWithdrawUsd?: number;
   configured: boolean;
   apiBase: string;
   rateCard: {
@@ -15,6 +16,20 @@ type TreasuryInfo = {
       completion_usd_per_mtok: number;
     };
   };
+};
+
+type RefundRow = {
+  id: string;
+  status: string;
+  usd: number;
+  destination: string;
+  createdAt: string;
+};
+
+type KeyRow = {
+  prefix: string;
+  createdAt: string;
+  revoked: boolean;
 };
 
 type PhantomProvider = {
@@ -65,6 +80,8 @@ export function BuyPanel() {
   const [wallet, setWallet] = useState<string | null>(null);
   const [balanceUsd, setBalanceUsd] = useState<number | null>(null);
   const [apiKey, setApiKey] = useState<string | null>(null);
+  const [keys, setKeys] = useState<KeyRow[]>([]);
+  const [refunds, setRefunds] = useState<RefundRow[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -76,19 +93,72 @@ export function BuyPanel() {
   }, []);
 
   const refreshBalance = useCallback(async (w: string) => {
+    const timestampMs = Date.now();
+    const msg = `Senda balance read\nWallet: ${w}\nTs: ${timestampMs}`;
+    const phantom = getPhantom();
+    if (!phantom) {
+      setStatus("Wallet not available for signed balance read");
+      return;
+    }
+    const signed = await phantom.signMessage(
+      new TextEncoder().encode(msg),
+      "utf8",
+    );
+    const signatureBase58 = encodeBs58(signed.signature);
     const res = await fetch(
-      `/api/account/balance?wallet=${encodeURIComponent(w)}`,
+      `/api/account/balance?wallet=${encodeURIComponent(w)}&timestampMs=${timestampMs}&signatureBase58=${encodeURIComponent(signatureBase58)}`,
     );
     const data = (await res.json()) as {
       balance_usd?: number;
       storeReady?: boolean;
+      error?: string;
     };
+    if (!res.ok) {
+      setStatus(data.error || "Balance read failed");
+      return;
+    }
     if (data.storeReady === false) {
       setBalanceUsd(null);
       setStatus("Billing store not ready (Redis)");
       return;
     }
     setBalanceUsd(typeof data.balance_usd === "number" ? data.balance_usd : 0);
+  }, []);
+
+  const refreshRefunds = useCallback(async (w: string) => {
+    const timestampMs = Date.now();
+    const msg = `Senda refund list\nWallet: ${w}\nTs: ${timestampMs}`;
+    const phantom = getPhantom();
+    if (!phantom) return;
+    const signed = await phantom.signMessage(
+      new TextEncoder().encode(msg),
+      "utf8",
+    );
+    const signatureBase58 = encodeBs58(signed.signature);
+    const res = await fetch(
+      `/api/account/refund?wallet=${encodeURIComponent(w)}&timestampMs=${timestampMs}&signatureBase58=${encodeURIComponent(signatureBase58)}`,
+    );
+    if (!res.ok) return;
+    const data = (await res.json()) as { refunds?: RefundRow[] };
+    setRefunds(Array.isArray(data.refunds) ? data.refunds : []);
+  }, []);
+
+  const refreshKeys = useCallback(async (w: string) => {
+    const timestampMs = Date.now();
+    const msg = `Senda API key list\nWallet: ${w}\nTs: ${timestampMs}`;
+    const phantom = getPhantom();
+    if (!phantom) return;
+    const signed = await phantom.signMessage(
+      new TextEncoder().encode(msg),
+      "utf8",
+    );
+    const signatureBase58 = encodeBs58(signed.signature);
+    const res = await fetch(
+      `/api/account/keys?wallet=${encodeURIComponent(w)}&timestampMs=${timestampMs}&signatureBase58=${encodeURIComponent(signatureBase58)}`,
+    );
+    if (!res.ok) return;
+    const data = (await res.json()) as { keys?: KeyRow[] };
+    setKeys(Array.isArray(data.keys) ? data.keys : []);
   }, []);
 
   async function connect() {
@@ -103,6 +173,8 @@ export function BuyPanel() {
       const w = res.publicKey.toBase58();
       setWallet(w);
       await refreshBalance(w);
+      await refreshRefunds(w);
+      await refreshKeys(w);
     } catch {
       setStatus("Wallet connect cancelled.");
     }
@@ -113,8 +185,20 @@ export function BuyPanel() {
     setBusy(true);
     setStatus(null);
     try {
+      const timestampMs = Date.now();
+      const msg = `Senda deposit sync\nWallet: ${wallet}\nTs: ${timestampMs}`;
+      const phantom = getPhantom();
+      if (!phantom) {
+        setStatus("Wallet not available");
+        return;
+      }
+      const signed = await phantom.signMessage(
+        new TextEncoder().encode(msg),
+        "utf8",
+      );
+      const signatureBase58 = encodeBs58(signed.signature);
       const res = await fetch(
-        `/api/account/deposit-sync?wallet=${encodeURIComponent(wallet)}`,
+        `/api/account/deposit-sync?wallet=${encodeURIComponent(wallet)}&timestampMs=${timestampMs}&signatureBase58=${encodeURIComponent(signatureBase58)}`,
       );
       const data = (await res.json()) as {
         ok?: boolean;
@@ -169,6 +253,7 @@ export function BuyPanel() {
       }
       setApiKey(data.apiKey);
       setStatus("API key created — copy it now.");
+      await refreshKeys(wallet);
     } catch {
       setStatus("Signature rejected or mint failed.");
     } finally {
@@ -176,7 +261,95 @@ export function BuyPanel() {
     }
   }
 
+  async function revokeKey(prefix: string) {
+    if (!wallet) return;
+    const phantom = getPhantom();
+    if (!phantom) return;
+    setBusy(true);
+    setStatus(null);
+    try {
+      const timestampMs = Date.now();
+      const message = `Senda API key revoke\nWallet: ${wallet}\nPrefix: ${prefix}\nTs: ${timestampMs}`;
+      const signed = await phantom.signMessage(
+        new TextEncoder().encode(message),
+        "utf8",
+      );
+      const signatureBase58 = encodeBs58(signed.signature);
+      const res = await fetch("/api/account/keys", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ wallet, prefix, timestampMs, signatureBase58 }),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        setStatus(data.error || "Revoke failed");
+        return;
+      }
+      setStatus(`Revoked ${prefix}`);
+      await refreshKeys(wallet);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function requestRefund() {
+    if (!wallet) return;
+    const phantom = getPhantom();
+    if (!phantom) {
+      setStatus("Wallet not available");
+      return;
+    }
+    const min = info?.minWithdrawUsd ?? 10;
+    if (balanceUsd != null && balanceUsd < min) {
+      setStatus(`Refunds need at least $${min.toFixed(0)} available.`);
+      return;
+    }
+    setBusy(true);
+    setStatus(null);
+    try {
+      const timestampMs = Date.now();
+      const destination = wallet;
+      const message = `Senda API balance refund\nWallet: ${wallet}\nDestination: ${destination}\nTs: ${timestampMs}`;
+      const signed = await phantom.signMessage(
+        new TextEncoder().encode(message),
+        "utf8",
+      );
+      const signatureBase58 = encodeBs58(signed.signature);
+      const res = await fetch("/api/account/refund", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          wallet,
+          destination,
+          timestampMs,
+          signatureBase58,
+        }),
+      });
+      const data = (await res.json()) as {
+        error?: string;
+        hint?: string;
+        request?: { usd?: number };
+      };
+      if (!res.ok) {
+        setStatus(data.error || "Refund request failed");
+        return;
+      }
+      setStatus(
+        data.request?.usd != null
+          ? `Refund queued for $${data.request.usd.toFixed(2)} USDC (ops settles).`
+          : data.hint || "Refund queued.",
+      );
+      await refreshBalance(wallet);
+      await refreshRefunds(wallet);
+    } catch {
+      setStatus("Signature rejected or refund failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const dd = info?.rateCard.daily_driver;
+  const minWithdraw = info?.minWithdrawUsd ?? 10;
 
   return (
     <div className="space-y-10">
@@ -186,6 +359,7 @@ export function BuyPanel() {
           Your Solana address is your account for this preview. Top up an API
           balance, then mint a key for{" "}
           <code className="text-[var(--fg)]">{info?.apiBase ?? "/v1"}</code>.
+          Balance reads and syncs require a short wallet signature.
         </p>
         <div className="flex flex-wrap items-center gap-3">
           <button
@@ -262,6 +436,57 @@ export function BuyPanel() {
             {apiKey}
           </code>
         ) : null}
+        {keys.length > 0 ? (
+          <ul className="space-y-2 text-[12px] text-[var(--fg-muted)]">
+            {keys.map((k) => (
+              <li key={k.prefix} className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[var(--fg)]">{k.prefix}…</span>
+                {k.revoked ? (
+                  <span>revoked</span>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void revokeKey(k.prefix)}
+                    className="underline disabled:opacity-40"
+                  >
+                    Revoke
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
+
+      <section className="space-y-3 border-t border-[var(--border)] pt-8">
+        <h2 className="text-lg font-semibold tracking-tight">4. Request refund</h2>
+        <p className="text-[14px] leading-relaxed text-[var(--fg-muted)]">
+          Unused prepaid API balance can be returned as USDC to this wallet.
+          Minimum ${minWithdraw.toFixed(0)}. Preview settlements are ops-assisted
+          — see the{" "}
+          <a href="/terms" className="text-[var(--accent)] hover:underline">
+            terms
+          </a>
+          .
+        </p>
+        <button
+          type="button"
+          disabled={!wallet || busy}
+          onClick={() => void requestRefund()}
+          className="rounded-md border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-2 text-[13px] font-medium disabled:opacity-40"
+        >
+          Request refund
+        </button>
+        {refunds.length > 0 ? (
+          <ul className="space-y-1 text-[12px] text-[var(--fg-muted)]">
+            {refunds.slice(0, 5).map((r) => (
+              <li key={r.id} className="font-mono">
+                {r.id.slice(0, 10)}… ${r.usd.toFixed(2)} — {r.status}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </section>
 
       {dd ? (
@@ -270,8 +495,8 @@ export function BuyPanel() {
           <p className="text-[14px] text-[var(--fg-muted)]">
             Daily-driver models: ${dd.prompt_usd_per_mtok.toFixed(2)} / $
             {dd.completion_usd_per_mtok.toFixed(2)} per MTok (prompt /
-            completion). Capacity-tier models cost more. Rates may change while
-            this is in preview.
+            completion). Capacity-tier models use a separate (currently lower)
+            rate card. Rates may change while this is in preview.
           </p>
         </section>
       ) : null}

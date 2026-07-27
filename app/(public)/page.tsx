@@ -17,7 +17,7 @@ import { AppShowcase } from "../components/AppShowcase";
 export const metadata: Metadata = {
   title: "Senda — open-source AI, served by the people",
   description:
-    "A peer-to-peer network for open language models: reach the network through an OpenAI-compatible API, or run the Senda app and serve models yourself on your own machine. No third-party AI provider in between.",
+    "A peer-to-peer network for open language models: reach the network through an OpenAI-compatible API, or run the Senda app and serve models yourself. Peers by default; rare uptime fallback may use an external provider.",
 };
 
 /**
@@ -30,7 +30,7 @@ export const metadata: Metadata = {
  * detour, no signup.
  *
  * Two audiences land here and the page serves both: someone who wants
- * open models without a third-party AI provider (hero + chat + "what it's
+ * open models on community hardware by default (hero + chat + "what it's
  * for" + FAQ), and someone with spare hardware who might contribute (the
  * two-sided section + "run a node" CTAs). We deliberately don't lead with
  * anything price-related — the economics may change; the architecture won't.
@@ -96,7 +96,8 @@ export default function PublicHomePage() {
             <p className="mx-auto mt-4 max-w-md text-pretty text-[15px] text-[var(--fg-muted)]">
               A network of machines serving open models. Run the app to add
               yours, or reach the whole network through one OpenAI-compatible
-              API. No third-party AI provider in between.
+              API. Peers by default; rare uptime fallback may use an external
+              provider.
             </p>
             <div className="mx-auto mt-7 w-full max-w-2xl">
               <HeroChat />
@@ -188,8 +189,8 @@ export default function PublicHomePage() {
 
             <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
               <Feature
-                title="No third-party AI provider"
-                body="Your prompt goes to a peer running an open-weight model on a contributed machine — not OpenAI, Anthropic, or Google. Nothing to revoke, no provider terms to read."
+                title="Peers by default"
+                body="Your prompt goes to a peer running an open-weight model on contributed hardware. Rare uptime fallback may use an external provider so the API stays sellable — the default path is the mesh."
               />
               <Feature
                 title="Apple Silicon carries a lot of it"
@@ -238,7 +239,7 @@ export default function PublicHomePage() {
               <LaneCard
                 step="Use"
                 title="Build on the network"
-                body="Chat free on senda.network, or use the paid API preview: OpenAI-compatible /v1 with a key. Your request goes to a peer, not a third-party AI provider."
+                body="Chat free on senda.network, or use the paid API preview: OpenAI-compatible /v1 with a key. Requests go to mesh peers by default; rare uptime fallback may use an external provider."
                 cta={{ label: "API preview →", href: "/buy" }}
               />
               <LaneCard
@@ -250,7 +251,7 @@ export default function PublicHomePage() {
               <LaneCard
                 step="Earn"
                 title="Contributor credits"
-                body="Nodes accrue contributor credits for tokens served — tracked in the dashboard. Cash payouts aren’t live yet. Separate from the paid API balance."
+                body="Nodes track contributor credits for tokens served. Paid /v1 mesh serves may also accrue peer USD (ops-gated payouts, not self-serve). Separate from the customer API balance."
                 cta={{ label: "How credits work →", href: "/contribute#earn" }}
               />
             </div>
@@ -289,7 +290,7 @@ export default function PublicHomePage() {
               <FitCard
                 title="Why it holds up"
                 items={[
-                  "Off third-party AI — your prompt goes to a peer in the mesh, not OpenAI, Anthropic, or Google",
+                  "Peers by default — your prompt goes to a mesh peer; rare uptime fallback may use an external provider",
                   "Yours to control — run your own peer on hardware you own, not a rented black-box endpoint",
                   "No lock-in — OpenAI-compatible API, fully open-source runtime",
                   "Verified peers — each one proves it runs the model it advertises",
@@ -314,7 +315,7 @@ export default function PublicHomePage() {
             <div className="divide-y divide-[var(--border)] border-y border-[var(--border)]">
               <FaqItem
                 q="What is Senda?"
-                a="A peer-to-peer mesh that runs open-weight models end-to-end on hardware contributors already own. Reach it through an OpenAI-compatible API — or the chat on senda.network — and a capability-aware router sends each request to a peer that can serve it. No third-party AI provider sits in the middle."
+                a="A peer-to-peer mesh that runs open-weight models on hardware contributors already own. Reach it through an OpenAI-compatible API — or the chat on senda.network — and a capability-aware router sends each request to a peer that can serve it. Peers by default; rare uptime fallback may use an external provider."
               />
               <FaqItem
                 q="Do I need to sign up or install anything to chat?"

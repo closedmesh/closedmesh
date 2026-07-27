@@ -16,20 +16,20 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://senda.network"),
   title: "Senda — open peer-to-peer LLM",
   description:
-    "Chat with an LLM served by a peer-to-peer mesh of contributed compute. No third-party API behind it. Run a node yourself or just use the chat.",
+    "Chat with an LLM served by a peer-to-peer mesh of contributed compute. Peers by default; rare uptime fallback may use an external provider. Run a node yourself or just use the chat.",
   openGraph: {
     type: "website",
     siteName: "Senda",
     url: "https://senda.network",
     title: "Senda — open-source AI, served by the people",
     description:
-      "A peer-to-peer network for open language models: use models other people serve, or run the app and serve them yourself. No third-party AI provider in between. Chat in your browser or run a node.",
+      "A peer-to-peer network for open language models: use models other people serve, or run the app and serve them yourself. Peers by default; rare uptime fallback may use an external provider.",
   },
   twitter: {
     card: "summary_large_image",
     title: "Senda — open-source AI, served by the people",
     description:
-      "A peer-to-peer network for open language models: use models other people serve, or run the app and serve them yourself. No third-party AI provider in between.",
+      "A peer-to-peer network for open language models: use models other people serve, or run the app and serve them yourself. Peers by default; rare uptime fallback may use an external provider.",
   },
 };
 

@@ -57,7 +57,6 @@ export async function GET(req: Request) {
         status: res.status,
         headers: {
           "content-type": res.headers.get("content-type") ?? "application/json",
-          "x-senda-account-id": key.accountId,
         },
       }),
     );

@@ -21,6 +21,7 @@ import {
 import {
   estimatePromptTokensFromMessages,
   estimateReserveMicros,
+  getRateCardRow,
   paidApiEnabled,
   requestCostMicros,
 } from "../../../../lib/rate-card";
@@ -28,6 +29,7 @@ import {
   runtimeAuthHeaders,
   runtimeBaseUrl,
 } from "../../../../lib/runtime-proxy";
+import { recordPeerUsdEarnings } from "../../../../lib/peer-earnings";
 import { appendSessionReceipt } from "../../../../lib/session-receipts";
 import {
   estimateCompletionTokensFromText,
@@ -115,6 +117,9 @@ async function accrueMeshCredits(input: {
   tier: "daily_driver" | "capacity" | "experimental";
   promptTokens: number;
   completionTokens: number;
+  requestId: string;
+  /** Skip peer USD when customer settle was underpaid. */
+  skipPeerUsd?: boolean;
 }): Promise<void> {
   if (input.completionTokens <= 0) return;
   const servingPeer = input.peerId?.trim() || null;
@@ -143,17 +148,29 @@ async function accrueMeshCredits(input: {
     attribution,
     multiplier,
   });
+  if (!input.skipPeerUsd) {
+    void recordPeerUsdEarnings({
+      peerId,
+      modelId: input.modelId,
+      completionTokens: input.completionTokens,
+      requestId: input.requestId,
+    });
+  }
 }
 
 async function settleSafe(
   requestId: string,
   actualMicros: number,
-): Promise<{ balance: number | null; charged: number }> {
+): Promise<{ balance: number | null; charged: number; underpaid: number }> {
   const settled = await settleCustomer({ requestId, actualMicros });
   if (settled.ok) {
-    return { balance: settled.balance, charged: settled.charged };
+    return {
+      balance: settled.balance,
+      charged: settled.charged,
+      underpaid: settled.underpaid ?? 0,
+    };
   }
-  return { balance: null, charged: 0 };
+  return { balance: null, charged: 0, underpaid: 0 };
 }
 
 async function fetchUpstream(
@@ -232,7 +249,9 @@ export async function POST(req: Request) {
 
   let settled = false;
   const finishSettle = async (actualMicros: number) => {
-    if (settled) return settleSafe(requestId, actualMicros);
+    if (settled) {
+      return settleSafe(requestId, actualMicros);
+    }
     settled = true;
     return settleSafe(requestId, actualMicros);
   };
@@ -261,7 +280,6 @@ export async function POST(req: Request) {
     "x-senda-sla-candidates": String(sla.candidatePeerCount),
     "x-senda-fallback-status": decision.verdict,
     "x-senda-request-id": requestId,
-    "x-senda-account-id": key.accountId,
   };
   if (decision.useFallback) {
     headersOut["x-senda-fallback-provider"] = "openrouter";
@@ -320,6 +338,24 @@ export async function POST(req: Request) {
   const servingPeer = upstream.headers.get("x-senda-serving-peer");
   if (servingPeer) headersOut["x-senda-serving-peer"] = servingPeer;
 
+  const finalizeMeshAccrual = async (input: {
+    promptTokens: number;
+    completionTokens: number;
+    underpaid: number;
+  }) => {
+    if (servedBy !== "mesh" || input.completionTokens <= 0) return;
+    await accrueMeshCredits({
+      modelId,
+      peerId: servingPeer,
+      slaPeerId: sla.creditPeerId,
+      tier: sla.tier,
+      promptTokens: input.promptTokens,
+      completionTokens: input.completionTokens,
+      requestId,
+      skipPeerUsd: input.underpaid > 0,
+    });
+  };
+
   if (!upstream.ok) {
     await finishSettle(0);
     const text = await upstream.text().catch(() => "");
@@ -352,16 +388,24 @@ export async function POST(req: Request) {
       if (result.balance != null) {
         headersOut["x-senda-balance-usd-micros"] = String(result.balance);
       }
-      if (servedBy === "mesh") {
-        await accrueMeshCredits({
-          modelId,
-          peerId: servingPeer,
-          slaPeerId: sla.creditPeerId,
-          tier: sla.tier,
-          promptTokens: usage.promptTokens || promptEstimate,
-          completionTokens: usage.completionTokens,
-        });
+      if (servedBy === "fallback") {
+        const row = getRateCardRow(modelId);
+        console.info(
+          JSON.stringify({
+            kind: "senda_fallback_margin",
+            requestId,
+            charged: result.charged,
+            cogs_floor_completion_per_mtok:
+              row.external_cogs_completion_per_mtok_usd_micros,
+            completionTokens: usage.completionTokens,
+          }),
+        );
       }
+      await finalizeMeshAccrual({
+        promptTokens: usage.promptTokens || promptEstimate,
+        completionTokens: usage.completionTokens,
+        underpaid: result.underpaid,
+      });
       return applyCors(
         req,
         NextResponse.json(json, { status: 200, headers: headersOut }),
@@ -388,14 +432,33 @@ export async function POST(req: Request) {
     if (usage && (usage.completionTokens > 0 || usage.promptTokens > 0)) {
       return {
         promptTokens: usage.promptTokens || promptEstimate,
-        completionTokens: usage.completionTokens,
+        completionTokens: Math.min(usage.completionTokens, maxOut),
       };
     }
-    const fromText = estimateCompletionTokensFromText(streamedText);
+    const fromText = Math.min(
+      estimateCompletionTokensFromText(streamedText),
+      maxOut,
+    );
     return {
       promptTokens: promptEstimate,
       completionTokens: fromText,
     };
+  };
+
+  const settleAndAccrue = async () => {
+    const finalUsage = resolveUsage();
+    const charged = requestCostMicros({
+      modelId,
+      promptTokens: finalUsage.promptTokens,
+      completionTokens: finalUsage.completionTokens,
+    });
+    const result = await finishSettle(charged);
+    await finalizeMeshAccrual({
+      promptTokens: finalUsage.promptTokens,
+      completionTokens: finalUsage.completionTokens,
+      underpaid: result.underpaid,
+    });
+    return result;
   };
 
   const stream = new ReadableStream<Uint8Array>({
@@ -407,13 +470,7 @@ export async function POST(req: Request) {
           "body",
         );
         if (done) {
-          const finalUsage = resolveUsage();
-          const charged = requestCostMicros({
-            modelId,
-            promptTokens: finalUsage.promptTokens,
-            completionTokens: finalUsage.completionTokens,
-          });
-          const result = await finishSettle(charged);
+          const result = await settleAndAccrue();
           const meta = `data: ${JSON.stringify({
             senda: {
               cost_usd_micros: result.charged,
@@ -422,16 +479,6 @@ export async function POST(req: Request) {
             },
           })}\n\n`;
           controller.enqueue(new TextEncoder().encode(meta));
-          if (servedBy === "mesh" && finalUsage.completionTokens > 0) {
-            await accrueMeshCredits({
-              modelId,
-              peerId: servingPeer,
-              slaPeerId: sla.creditPeerId,
-              tier: sla.tier,
-              promptTokens: finalUsage.promptTokens,
-              completionTokens: finalUsage.completionTokens,
-            });
-          }
           controller.close();
           return;
         }
@@ -454,40 +501,16 @@ export async function POST(req: Request) {
           }
         }
       } catch (err) {
-        // Charge for whatever was already delivered; don't zero-out after
-        // the customer received tokens. Idle timeout cancels the upstream read.
         if (err instanceof StreamIdleTimeoutError) {
           void reader.cancel().catch(() => {});
         }
-        const finalUsage = resolveUsage();
-        const charged = requestCostMicros({
-          modelId,
-          promptTokens: finalUsage.promptTokens,
-          completionTokens: finalUsage.completionTokens,
-        });
-        await finishSettle(charged);
-        if (servedBy === "mesh" && finalUsage.completionTokens > 0) {
-          void accrueMeshCredits({
-            modelId,
-            peerId: servingPeer,
-            slaPeerId: sla.creditPeerId,
-            tier: sla.tier,
-            promptTokens: finalUsage.promptTokens,
-            completionTokens: finalUsage.completionTokens,
-          });
-        }
+        await settleAndAccrue();
         controller.error(err);
       }
     },
     cancel() {
       void reader.cancel();
-      const finalUsage = resolveUsage();
-      const charged = requestCostMicros({
-        modelId,
-        promptTokens: finalUsage.promptTokens,
-        completionTokens: finalUsage.completionTokens,
-      });
-      void finishSettle(charged);
+      void settleAndAccrue();
     },
   });
 

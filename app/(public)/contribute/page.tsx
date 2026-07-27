@@ -40,7 +40,7 @@ export default function ContributePage() {
               Contribute compute
             </div>
             <h1 className="mt-3 text-balance text-3xl font-semibold leading-[1.1] tracking-tight sm:text-4xl">
-              Run a node. Serve the mesh. Earn credits.
+              Run a node. Serve the mesh. Track contribution.
             </h1>
             <p className="mt-4 max-w-2xl text-pretty text-[15px] leading-relaxed text-[var(--fg-muted)]">
               Senda routes chat and API traffic to peers whose hardware
@@ -48,8 +48,10 @@ export default function ContributePage() {
               <strong className="font-medium text-[var(--fg)]">
                 contributor credits
               </strong>{" "}
-              — tracked now in the app. Cash payouts aren&apos;t live yet. This
-              is separate from the paid API balance on{" "}
+              — a measure of contribution, tracked in the app. Paid{" "}
+              <code className="text-[var(--fg)]">/v1</code> mesh serves may also
+              accrue a separate peer USD liability (payouts ops-gated, not
+              self-serve). Separate from the customer API balance on{" "}
               <Link href="/buy" className="text-[var(--accent)] underline">
                 /buy
               </Link>

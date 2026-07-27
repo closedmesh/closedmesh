@@ -18,7 +18,8 @@ const SETTLED_PREFIX = "senda:cust:settled";
 const DEPOSIT_PREFIX = "senda:cust:deposit";
 const LEDGER_PREFIX = "senda:cust:ledger";
 const RESERVE_EXP_ZSET = "senda:cust:reserves:exp";
-const LEDGER_TTL_SEC = 365 * 24 * 3600;
+/** Journal list trim only — liability keys (balance, deposit, settled) do not expire. */
+const JOURNAL_MAX_AGE_HINT_SEC = 365 * 24 * 3600;
 /** Max time a hold may live before reclaim refunds it. */
 export const RESERVE_TTL_SEC = 10 * 60;
 const LEDGER_MAX_ENTRIES = 100;
@@ -102,7 +103,7 @@ async function appendJournal(
     const key = ledgerKey(accountId);
     await redis.lpush(key, line);
     await redis.ltrim(key, 0, LEDGER_MAX_ENTRIES - 1);
-    await redis.expire(key, LEDGER_TTL_SEC);
+    await redis.expire(key, JOURNAL_MAX_AGE_HINT_SEC);
     return;
   }
   if (!useMemory()) return;
@@ -110,6 +111,32 @@ async function appendJournal(
   prev.unshift(line);
   memory.journal.set(accountId, prev.slice(0, LEDGER_MAX_ENTRIES));
 }
+
+/**
+ * Atomic reclaim of one expired reserve (or no-op if already settled).
+ * KEYS: reserve, settled, exp_zset · ARGV: requestId
+ */
+const RECLAIM_ONE_LUA = `
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  redis.call('ZREM', KEYS[3], ARGV[1])
+  return {0, 0, '', 0}
+end
+local raw = redis.call('GET', KEYS[1])
+redis.call('ZREM', KEYS[3], ARGV[1])
+if not raw then
+  return {0, 0, '', 0}
+end
+local micros = tonumber(string.match(raw, '"micros":([0-9]+)'))
+local accountId = string.match(raw, '"accountId":"([^"]+)"')
+if not micros or micros <= 0 or not accountId then
+  redis.call('DEL', KEYS[1])
+  return {0, 0, '', 0}
+end
+local balKey = 'senda:cust:balance:' .. accountId
+local bal = redis.call('INCRBY', balKey, micros)
+redis.call('DEL', KEYS[1])
+return {1, micros, accountId, bal}
+`;
 
 /**
  * Refund holds whose expiry has passed and were never settled.
@@ -130,33 +157,26 @@ export async function reclaimExpiredReserves(
         offset: 0,
         count: limit,
       });
+      const script = redis.createScript<(string | number)[]>(RECLAIM_ONE_LUA);
       for (const requestId of ids) {
         const id = String(requestId);
-        const settled = await redis.get(settledKey(id));
-        if (settled != null) {
-          await redis.zrem(RESERVE_EXP_ZSET, id);
-          continue;
-        }
-        const raw = await redis.get<string | null>(reserveKey(id));
-        await redis.zrem(RESERVE_EXP_ZSET, id);
-        if (raw == null) continue;
-        const parsed = (
-          typeof raw === "string" ? JSON.parse(raw) : raw
-        ) as ReserveRecord;
-        const hold = Math.floor(Number(parsed.micros) || 0);
-        if (hold > 0 && parsed.accountId) {
-          const balance = await redis.incrby(balanceKey(parsed.accountId), hold);
-          await redis.del(reserveKey(id));
-          await appendJournal(parsed.accountId, {
+        const result = await script.eval(
+          [reserveKey(id), settledKey(id), RESERVE_EXP_ZSET],
+          [id],
+        );
+        if (Number(result?.[0]) !== 1) continue;
+        const hold = Number(result?.[1]);
+        const accountId = String(result?.[2] ?? "");
+        const balance = Number(result?.[3]);
+        if (accountId && hold > 0) {
+          await appendJournal(accountId, {
             kind: "reclaim",
             requestId: id,
             micros: hold,
-            balance: Number(balance),
+            balance,
           });
           microsTotal += hold;
           reclaimed += 1;
-        } else {
-          await redis.del(reserveKey(id));
         }
       }
     } catch {
@@ -211,8 +231,18 @@ export async function getCustomerBalance(
 
 /**
  * Credit customer balance (USDC deposit or admin top-up).
- * When `depositId` is set, the credit is idempotent on that id.
+ * When `depositId` is set, NX + INCRBY are atomic (no burned deposit without credit).
  */
+const CREDIT_DEPOSIT_LUA = `
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  local bal = tonumber(redis.call('GET', KEYS[2]) or '0')
+  return {-1, bal}
+end
+redis.call('SET', KEYS[1], '1')
+local bal = redis.call('INCRBY', KEYS[2], ARGV[1])
+return {1, bal}
+`;
+
 export async function creditCustomer(input: {
   accountId: string;
   micros: number;
@@ -231,19 +261,20 @@ export async function creditCustomer(input: {
   const redis = getRedis();
   if (redis) {
     try {
+      let balance: number;
       if (input.depositId) {
-        const dKey = depositKey(input.depositId);
-        const existed = await redis.set(dKey, "1", {
-          nx: true,
-          ex: LEDGER_TTL_SEC,
-        });
-        if (existed !== "OK") {
-          const balance = (await getCustomerBalance(id)) ?? 0;
-          return { ok: true, balance };
-        }
+        const script = redis.createScript<number[]>(CREDIT_DEPOSIT_LUA);
+        const result = await script.eval(
+          [depositKey(input.depositId), balanceKey(id)],
+          [String(micros)],
+        );
+        const code = Number(result?.[0]);
+        balance = Number(result?.[1]);
+        if (code === -1) return { ok: true, balance };
+        if (code !== 1) return { ok: false, error: "redis_error" };
+      } else {
+        balance = Number(await redis.incrby(balanceKey(id), micros));
       }
-      const balance = await redis.incrby(balanceKey(id), micros);
-      await redis.expire(balanceKey(id), LEDGER_TTL_SEC);
       await appendJournal(id, {
         kind: "credit",
         micros,
@@ -251,7 +282,7 @@ export async function creditCustomer(input: {
         depositId: input.depositId,
         balance,
       });
-      return { ok: true, balance: Number(balance) };
+      return { ok: true, balance };
     } catch (err) {
       return {
         ok: false,
@@ -273,6 +304,78 @@ export async function creditCustomer(input: {
     micros,
     reason: input.reason,
     depositId: input.depositId,
+    balance: next,
+  });
+  return { ok: true, balance: next };
+}
+
+const ADJUST_LUA = `
+local bal = tonumber(redis.call('GET', KEYS[1]) or '0')
+local delta = tonumber(ARGV[1])
+if delta < 0 and bal < -delta then
+  return {-1, bal}
+end
+local next = redis.call('INCRBY', KEYS[1], delta)
+if next < 0 then
+  redis.call('INCRBY', KEYS[1], -delta)
+  return {-1, bal}
+end
+return {1, next}
+`;
+
+/**
+ * Adjust spendable balance by a signed delta (refund drain / restore / ops).
+ * Negative deltas fail with insufficient_balance when funds are short.
+ */
+export async function adjustCustomerBalance(input: {
+  accountId: string;
+  deltaMicros: number;
+  reason: string;
+  ref?: string;
+}): Promise<{ ok: true; balance: number } | { ok: false; error: string }> {
+  await reclaimExpiredReserves(10);
+  const id = normalizeAccountId(input.accountId);
+  if (!id) return { ok: false, error: "invalid_account" };
+  if (!Number.isFinite(input.deltaMicros) || input.deltaMicros === 0) {
+    return { ok: false, error: "invalid_amount" };
+  }
+  const delta = Math.trunc(input.deltaMicros);
+  if (!customerStoreReady()) return { ok: false, error: "store_unavailable" };
+
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const script = redis.createScript<number[]>(ADJUST_LUA);
+      const result = await script.eval([balanceKey(id)], [String(delta)]);
+      const code = Number(result?.[0]);
+      const balance = Number(result?.[1]);
+      if (code === -1) return { ok: false, error: "insufficient_balance" };
+      if (code !== 1) return { ok: false, error: "redis_error" };
+      await appendJournal(id, {
+        kind: "adjust",
+        micros: delta,
+        reason: input.reason,
+        ref: input.ref,
+        balance,
+      });
+      return { ok: true, balance };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : "redis_error",
+      };
+    }
+  }
+
+  const current = memory.balances.get(id) ?? 0;
+  const next = current + delta;
+  if (next < 0) return { ok: false, error: "insufficient_balance" };
+  memory.balances.set(id, next);
+  await appendJournal(id, {
+    kind: "adjust",
+    micros: delta,
+    reason: input.reason,
+    ref: input.ref,
     balance: next,
   });
   return { ok: true, balance: next };
@@ -425,9 +528,60 @@ export function computeSettleAmounts(input: {
   };
 }
 
+
+const SETTLE_LUA = `
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  return {0, redis.call('GET', KEYS[2]), 0, 0, 0, 0, ''}
+end
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+  return {-2, '', 0, 0, 0, 0, ''}
+end
+local reserved = tonumber(string.match(raw, '"micros":([0-9]+)'))
+local accountId = string.match(raw, '"accountId":"([^"]+)"')
+if not reserved or not accountId then
+  return {-3, '', 0, 0, 0, 0, ''}
+end
+local balKey = 'senda:cust:balance:' .. accountId
+local spendable = tonumber(redis.call('GET', balKey) or '0')
+if spendable < 0 then spendable = 0 end
+local actual = tonumber(ARGV[1])
+local charged = 0
+local release = 0
+local shortfall = 0
+local underpaid = 0
+if actual <= reserved then
+  charged = actual
+  release = reserved - actual
+else
+  local want = actual - reserved
+  if want > spendable then shortfall = spendable else shortfall = want end
+  charged = reserved + shortfall
+  underpaid = actual - charged
+end
+if release > 0 then
+  redis.call('INCRBY', balKey, release)
+end
+if shortfall > 0 then
+  local after = redis.call('DECRBY', balKey, shortfall)
+  if after < 0 then
+    redis.call('INCRBY', balKey, shortfall)
+    charged = reserved
+    shortfall = 0
+    underpaid = actual - charged
+  end
+end
+local balance = tonumber(redis.call('GET', balKey) or '0')
+redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[3], ARGV[2])
+local payload = '{"charged":' .. charged .. ',"balance":' .. balance .. ',"underpaid":' .. underpaid .. '}'
+redis.call('SET', KEYS[2], payload)
+return {1, payload, charged, balance, underpaid, release, accountId}
+`;
+
 /**
  * Finalize a reserve: charge actual cost (may pull shortfall from balance),
- * release unused hold. Idempotent per requestId.
+ * release unused hold. Idempotent per requestId. Atomic on Redis.
  */
 export async function settleCustomer(input: {
   requestId: string;
@@ -444,11 +598,19 @@ export async function settleCustomer(input: {
   const redis = getRedis();
   if (redis) {
     try {
-      const prior = await redis.get<string | null>(settledKey(requestId));
-      if (prior != null) {
-        const parsed = (
-          typeof prior === "string" ? JSON.parse(prior) : prior
-        ) as { charged: number; balance: number; underpaid?: number };
+      const script = redis.createScript<(string | number)[]>(SETTLE_LUA);
+      const result = await script.eval(
+        [reserveKey(requestId), settledKey(requestId), RESERVE_EXP_ZSET],
+        [String(actual), requestId],
+      );
+      const code = Number(result?.[0]);
+      if (code === 0) {
+        const prior = String(result?.[1] ?? "");
+        const parsed = JSON.parse(prior) as {
+          charged: number;
+          balance: number;
+          underpaid?: number;
+        };
         return {
           ok: true,
           balance: Number(parsed.balance),
@@ -457,99 +619,28 @@ export async function settleCustomer(input: {
           idempotent: true,
         };
       }
-
-      const rKey = reserveKey(requestId);
-      const raw = await redis.get<string | null>(rKey);
-      if (raw == null) {
-        return { ok: false, error: "reserve_missing" };
+      if (code === -2) return { ok: false, error: "reserve_missing" };
+      if (code !== 1) return { ok: false, error: "redis_error" };
+      const charged = Number(result?.[2]);
+      const balance = Number(result?.[3]);
+      const underpaid = Number(result?.[4]) || 0;
+      const release = Number(result?.[5]) || 0;
+      const accountId = String(result?.[6] ?? "");
+      if (accountId) {
+        await appendJournal(accountId, {
+          kind: "settle",
+          requestId,
+          charged,
+          released: release,
+          underpaid,
+          balance,
+        });
       }
-      const parsed = (
-        typeof raw === "string" ? JSON.parse(raw) : raw
-      ) as ReserveRecord;
-      const reserved = Number(parsed.micros);
-      const id = parsed.accountId;
-      const spendableRaw = await redis.get<number | string | null>(
-        balanceKey(id),
-      );
-      const spendable =
-        spendableRaw == null ? 0 : Math.max(0, Number(spendableRaw) || 0);
-      const amounts = computeSettleAmounts({
-        reserved,
-        actual,
-        spendableBalance: spendable,
-      });
-
-      if (amounts.release > 0) {
-        await redis.incrby(balanceKey(id), amounts.release);
-      }
-      if (amounts.shortfallDebit > 0) {
-        const after = await redis.decrby(balanceKey(id), amounts.shortfallDebit);
-        if (Number(after) < 0) {
-          // Race: put back and charge reserved only.
-          await redis.incrby(balanceKey(id), amounts.shortfallDebit);
-          const balance = Number(
-            (await redis.get<number | string | null>(balanceKey(id))) ?? 0,
-          );
-          await redis.del(rKey);
-          await redis.zrem(RESERVE_EXP_ZSET, requestId);
-          const charged = reserved;
-          const underpaid = Math.max(0, actual - charged);
-          const settledPayload = JSON.stringify({
-            charged,
-            balance,
-            underpaid,
-          });
-          await redis.set(settledKey(requestId), settledPayload, {
-            ex: LEDGER_TTL_SEC,
-          });
-          await appendJournal(id, {
-            kind: "settle",
-            requestId,
-            reserved,
-            charged,
-            released: 0,
-            shortfallDebit: 0,
-            underpaid,
-            balance,
-            note: "shortfall_race",
-          });
-          return {
-            ok: true,
-            balance,
-            charged,
-            underpaid: underpaid || undefined,
-          };
-        }
-      }
-
-      const balance = Number(
-        (await redis.get<number | string | null>(balanceKey(id))) ?? 0,
-      );
-      await redis.del(rKey);
-      await redis.zrem(RESERVE_EXP_ZSET, requestId);
-      const settledPayload = JSON.stringify({
-        charged: amounts.charged,
-        balance,
-        underpaid: amounts.underpaid,
-      });
-      await redis.set(settledKey(requestId), settledPayload, {
-        ex: LEDGER_TTL_SEC,
-      });
-      await appendJournal(id, {
-        kind: "settle",
-        requestId,
-        reserved,
-        charged: amounts.charged,
-        released: amounts.release,
-        shortfallDebit: amounts.shortfallDebit,
-        underpaid: amounts.underpaid,
-        balance,
-      });
       return {
         ok: true,
         balance,
-        charged: amounts.charged,
-        underpaid: amounts.underpaid || undefined,
+        charged,
+        underpaid: underpaid || undefined,
       };
     } catch (err) {
       return {
@@ -576,8 +667,7 @@ export async function settleCustomer(input: {
     actual,
     spendableBalance: spendable,
   });
-  const next =
-    spendable + amounts.release - amounts.shortfallDebit;
+  const next = spendable + amounts.release - amounts.shortfallDebit;
   memory.balances.set(held.accountId, next);
   memory.reserves.delete(requestId);
   memory.settled.set(requestId, {
@@ -600,4 +690,33 @@ export async function settleCustomer(input: {
     charged: amounts.charged,
     underpaid: amounts.underpaid || undefined,
   };
+}
+
+/** Sum all customer spendable balances (SCAN — ops reconcile). */
+export async function sumCustomerBalances(): Promise<number> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      let cursor = "0";
+      let total = 0;
+      do {
+        const [next, keys] = await redis.scan(cursor, {
+          match: `${BALANCE_PREFIX}:*`,
+          count: 100,
+        });
+        cursor = String(next);
+        for (const key of keys) {
+          const raw = await redis.get<number | string | null>(key);
+          const n = raw == null ? 0 : Number(raw);
+          if (Number.isFinite(n) && n > 0) total += n;
+        }
+      } while (cursor !== "0");
+      return total;
+    } catch {
+      return 0;
+    }
+  }
+  let total = 0;
+  for (const v of memory.balances.values()) total += v;
+  return total;
 }

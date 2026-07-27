@@ -17,6 +17,50 @@ export function balanceMessage(wallet: string, timestampMs: number): string {
   return `Senda balance read\nWallet: ${wallet}\nTs: ${timestampMs}`;
 }
 
+export function refundListMessage(wallet: string, timestampMs: number): string {
+  return `Senda refund list\nWallet: ${wallet}\nTs: ${timestampMs}`;
+}
+
+export function depositSyncMessage(wallet: string, timestampMs: number): string {
+  return `Senda deposit sync\nWallet: ${wallet}\nTs: ${timestampMs}`;
+}
+
+export function listKeysMessage(wallet: string, timestampMs: number): string {
+  return `Senda API key list\nWallet: ${wallet}\nTs: ${timestampMs}`;
+}
+
+export function revokeKeyMessage(
+  wallet: string,
+  prefix: string,
+  timestampMs: number,
+): string {
+  return `Senda API key revoke\nWallet: ${wallet}\nPrefix: ${prefix}\nTs: ${timestampMs}`;
+}
+
+export function refundMessage(
+  wallet: string,
+  destination: string,
+  timestampMs: number,
+): string {
+  return `Senda API balance refund\nWallet: ${wallet}\nDestination: ${destination}\nTs: ${timestampMs}`;
+}
+
+export function peerPayoutWalletMessage(
+  peerId: string,
+  wallet: string,
+  timestampMs: number,
+): string {
+  return `Senda peer payout wallet\nPeer: ${peerId}\nWallet: ${wallet}\nTs: ${timestampMs}`;
+}
+
+export function peerPayoutRequestMessage(
+  peerId: string,
+  wallet: string,
+  timestampMs: number,
+): string {
+  return `Senda peer payout request\nPeer: ${peerId}\nWallet: ${wallet}\nTs: ${timestampMs}`;
+}
+
 export function verifyWalletSignature(input: {
   wallet: string;
   message: string;

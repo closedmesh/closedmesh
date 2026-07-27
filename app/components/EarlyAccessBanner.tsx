@@ -19,7 +19,8 @@ export function EarlyAccessBanner() {
       <Link href="/contribute" className="text-[var(--accent)] hover:underline">
         Contributor credits
       </Link>{" "}
-      tracked (payouts not live). Free chat stays free.{" "}
+      tracked; peer USD may accrue on paid serves (cash payouts ops-gated, not
+      self-serve). Free chat stays free.{" "}
       <Link href="/security" className="text-[var(--accent)] hover:underline">
         Security →
       </Link>

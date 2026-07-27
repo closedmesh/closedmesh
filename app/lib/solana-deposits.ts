@@ -20,7 +20,10 @@ import { getAssociatedTokenAddress } from "@solana/spl-token";
 import { creditCustomer } from "./customer-ledger";
 import {
   MIN_TOPUP_USDC_ATOMIC,
+  MIN_WITHDRAW_USDC_ATOMIC,
   SOLANA_USDC_MINT,
+  solanaPayoutsConfigured,
+  solanaRpcProvider,
   solanaRpcUrl,
   solanaTreasuryAddress,
 } from "./solana-config";
@@ -252,15 +255,28 @@ export function extractDeposits(
   return extractDepositsByOwnerDelta(tx, treasuryWallet, usdcMint);
 }
 
+function looksLikeBase58Wallet(addr: string): boolean {
+  // Reject empty / too-short; Solana pubkeys are 32–44 base58 chars.
+  if (!addr || addr.length < 32 || addr.length > 48) return false;
+  return /^[1-9A-HJ-NP-Za-km-z]+$/.test(addr);
+}
+
 export type SyncResult = {
   scanned: number;
   credited: number;
   skipped: number;
+  quarantined: number;
   deposits: Array<{
     signature: string;
     accountId: string;
     micros: number;
     attribution: DetectedDeposit["attribution"];
+  }>;
+  quarantine: Array<{
+    signature: string;
+    fromWallet: string;
+    amountAtomic: number;
+    reason: string;
   }>;
   errors: string[];
 };
@@ -278,7 +294,9 @@ export async function syncSolanaDeposits(options?: {
     scanned: 0,
     credited: 0,
     skipped: 0,
+    quarantined: 0,
     deposits: [],
+    quarantine: [],
     errors: [],
   };
   if (!treasury) {
@@ -324,6 +342,42 @@ export async function syncSolanaDeposits(options?: {
           result.skipped += 1;
           continue;
         }
+        // Auto-credit only high-confidence attribution; quarantine the rest.
+        if (dep.attribution === "largest_decrease") {
+          result.quarantined += 1;
+          result.quarantine.push({
+            signature: dep.signature,
+            fromWallet: dep.fromWallet,
+            amountAtomic: dep.amountAtomic,
+            reason: "largest_decrease",
+          });
+          continue;
+        }
+        if (!looksLikeBase58Wallet(dep.fromWallet)) {
+          result.quarantined += 1;
+          result.quarantine.push({
+            signature: dep.signature,
+            fromWallet: dep.fromWallet,
+            amountAtomic: dep.amountAtomic,
+            reason: "invalid_wallet",
+          });
+          continue;
+        }
+        // Prefer owner wallets; reject if authority fell back to source ATA
+        // that isn't a valid standalone account id pattern (same check).
+        try {
+          const pk = new PublicKey(dep.fromWallet);
+          if (!pk.toBase58()) throw new Error("bad");
+        } catch {
+          result.quarantined += 1;
+          result.quarantine.push({
+            signature: dep.signature,
+            fromWallet: dep.fromWallet,
+            amountAtomic: dep.amountAtomic,
+            reason: "not_pubkey",
+          });
+          continue;
+        }
         const credit = await creditCustomer({
           accountId: dep.fromWallet,
           micros: dep.amountAtomic,
@@ -355,13 +409,19 @@ export async function treasuryInfo(): Promise<{
   treasury: string | null;
   usdcMint: string;
   minTopupUsd: number;
+  minWithdrawUsd: number;
   configured: boolean;
+  rpcProvider: "helius" | "custom" | "public";
+  payoutsConfigured: boolean;
 }> {
   const treasury = solanaTreasuryAddress();
   return {
     treasury,
     usdcMint: SOLANA_USDC_MINT,
     minTopupUsd: MIN_TOPUP_USDC_ATOMIC / 1_000_000,
+    minWithdrawUsd: MIN_WITHDRAW_USDC_ATOMIC / 1_000_000,
     configured: treasury != null,
+    rpcProvider: solanaRpcProvider(),
+    payoutsConfigured: solanaPayoutsConfigured(),
   };
 }

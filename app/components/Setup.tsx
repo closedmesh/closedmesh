@@ -210,7 +210,7 @@ function Hero({
       <div className="mt-7 flex flex-wrap justify-center gap-2 text-[11px]">
         <Pill>Full-quality models, one peer per session</Pill>
         <Pill>Serve the models your hardware fits</Pill>
-        <Pill>No third-party AI provider</Pill>
+        <Pill>Peers by default</Pill>
         <Pill>Mac · Linux · Windows</Pill>
       </div>
 

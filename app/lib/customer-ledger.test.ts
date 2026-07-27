@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  adjustCustomerBalance,
   computeSettleAmounts,
   creditCustomer,
   getCustomerBalance,
@@ -44,6 +45,30 @@ describe("computeSettleAmounts", () => {
 
 afterEach(() => {
   resetCustomerLedgerMemory();
+});
+
+describe("adjustCustomerBalance", () => {
+  it("debits and rejects overdraft", async () => {
+    await creditCustomer({
+      accountId: "adj",
+      micros: 1000,
+      reason: "admin",
+    });
+    await expect(
+      adjustCustomerBalance({
+        accountId: "adj",
+        deltaMicros: -400,
+        reason: "refund_request",
+      }),
+    ).resolves.toEqual({ ok: true, balance: 600 });
+    await expect(
+      adjustCustomerBalance({
+        accountId: "adj",
+        deltaMicros: -700,
+        reason: "refund_request",
+      }),
+    ).resolves.toEqual({ ok: false, error: "insufficient_balance" });
+  });
 });
 
 describe("creditCustomer", () => {

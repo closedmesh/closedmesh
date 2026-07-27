@@ -7,7 +7,7 @@ import { BuyPanel } from "../../components/BuyPanel";
 export const metadata: Metadata = {
   title: "API access (preview) — Senda",
   description:
-    "Paid API preview: top up an API balance with USDC on Solana, mint a ck_ key, call senda.network/v1. Free chat stays free. Contributor payouts are separate and not live yet.",
+    "Paid API preview: top up an API balance with USDC on Solana, mint a ck_ key, call senda.network/v1. Free chat stays free. Request refunds for unused balance. Peer USD payouts are preview/ops-gated.",
 };
 
 /**
@@ -34,12 +34,17 @@ export default function BuyPage() {
               Homepage chat stays free — no wallet required.
             </p>
             <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-[var(--fg-muted)]">
-              Running a node? That&apos;s{" "}
+              Running a node?{" "}
               <Link href="/contribute" className="text-[var(--accent)] underline">
-                contributor credits
+                Contribution credits
+              </Link>{" "}
+              stay illustrative; paid{" "}
+              <code className="text-[var(--fg)]">/v1</code> serves can accrue a
+              separate peer USD balance (payouts still preview / ops-gated). See{" "}
+              <Link href="/terms" className="text-[var(--accent)] underline">
+                terms
               </Link>
-              — tracked in the app, separate from this balance. Cash payouts
-              aren&apos;t live yet.
+              .
             </p>
             <p className="mt-3 text-[13px] text-[var(--fg-muted)]">
               <Link href="/docs" className="text-[var(--accent)] underline">

@@ -6,10 +6,10 @@ import { PublicFooter } from "../../components/PublicFooter";
 export const metadata: Metadata = {
   title: "Terms — Senda",
   description:
-    "The terms for using Senda during early access: as-is availability, acceptable use, how credits work (illustrative, not cash), and the responsibilities of contributors who run nodes.",
+    "The terms for using Senda during early access: as-is availability, acceptable use, prepaid API balance, contribution credits vs peer USD, refunds, and node responsibilities.",
 };
 
-const UPDATED = "June 29, 2026";
+const UPDATED = "July 27, 2026";
 
 /**
  * /terms — short, honest terms of use that match the early-access reality:
@@ -80,18 +80,61 @@ export default function TermsPage() {
               </ul>
             </Clause>
 
-            <Clause title="Credits are illustrative">
+            <Clause title="Paid API preview (prepaid balance)">
+              <p>
+                The{" "}
+                <Link href="/buy" className="text-[var(--accent)] hover:underline">
+                  paid API preview
+                </Link>{" "}
+                lets you top up a prepaid API balance in USDC on Solana and spend
+                it on{" "}
+                <code className="text-[var(--fg)]">/v1</code> inference. Free
+                web chat remains free. The preview is experimental: rates, models,
+                availability, and settlement timing can change. Prepaid balance is
+                a service credit for inference — not an investment, deposit
+                account, or crypto token issued by Senda.
+              </p>
+              <p>
+                You are responsible for sending the correct asset (USDC) on Solana
+                mainnet to the published treasury address. Wrong-chain or
+                wrong-token transfers may be unrecoverable. Deposit attribution
+                and refunds depend on network confirmation and our ops process.
+              </p>
+            </Clause>
+
+            <Clause title="Refunds">
+              <p>
+                You may request a refund of unused prepaid API balance (subject
+                to a minimum threshold shown on /buy). Refunds return USDC to a
+                Solana wallet you control. During preview, refunds are processed
+                manually or semi-automatically and are not instant. Amounts
+                already spent on completed or in-flight inference are not
+                refundable. We may refuse or delay refunds that look abusive,
+                erroneous, or legally restricted.
+              </p>
+            </Clause>
+
+            <Clause title="Contribution credits vs peer USD">
               <p>
                 Contributors accumulate{" "}
                 <Link href="/contribute" className="text-[var(--accent)] hover:underline">
-                  credits
+                  contribution credits
                 </Link>{" "}
-                for completion tokens served to the mesh. During early access
-                credits are illustrative — they are{" "}
+                for completion tokens served to the mesh. Those credits remain
+                illustrative during early access — they are{" "}
                 <span className="text-[var(--fg)]">not cash</span>, not a
                 financial instrument, and not a crypto token, and carry no
-                guarantee of future monetary value. How they work may change as
-                paid inference and payouts are built.
+                guarantee of monetary value.
+              </p>
+              <p>
+                Separately, when a peer serves a <em>paid</em>{" "}
+                <code className="text-[var(--fg)]">/v1</code> request, we may
+                accrue a peer USD liability toward a future USDC payout. Peer
+                payouts are a preview capability: thresholds, timing, tax/KYC
+                requirements, and availability can change, and there is{" "}
+                <span className="text-[var(--fg)]">no guarantee</span> that
+                accrued peer USD will be paid on any schedule until we say
+                payouts are generally available.
               </p>
             </Clause>
 
@@ -99,7 +142,8 @@ export default function TermsPage() {
               <p>
                 Running a node is voluntary and at your own risk. You are
                 responsible for your own hardware, electricity, network, and
-                for complying with the laws that apply to you. By serving the
+                for complying with the laws that apply to you — including any
+                tax reporting if you later receive payouts. By serving the
                 mesh you accept that other users&apos; prompts will be processed
                 on your machine to generate responses. You can stop serving at
                 any time.
