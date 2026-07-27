@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  computeSettleAmounts,
   creditCustomer,
   getCustomerBalance,
   reclaimExpiredReserves,
@@ -8,6 +9,38 @@ import {
   settleCustomer,
 } from "./customer-ledger";
 import { usdToMicros } from "./rate-card";
+
+describe("computeSettleAmounts", () => {
+  it("releases unused reserve when actual < reserved", () => {
+    expect(
+      computeSettleAmounts({
+        reserved: 400,
+        actual: 150,
+        spendableBalance: 600,
+      }),
+    ).toEqual({
+      charged: 150,
+      release: 250,
+      shortfallDebit: 0,
+      underpaid: 0,
+    });
+  });
+
+  it("pulls shortfall from spendable balance", () => {
+    expect(
+      computeSettleAmounts({
+        reserved: 200,
+        actual: 350,
+        spendableBalance: 100,
+      }),
+    ).toEqual({
+      charged: 300,
+      release: 0,
+      shortfallDebit: 100,
+      underpaid: 50,
+    });
+  });
+});
 
 afterEach(() => {
   resetCustomerLedgerMemory();
@@ -78,12 +111,13 @@ describe("reserve + settle", () => {
     expect(settled).toMatchObject({ ok: true, balance: 850, charged: 150 });
   });
 
-  it("caps charge at reserved amount", async () => {
+  it("pulls shortfall from remaining balance beyond reserve", async () => {
     await creditCustomer({
       accountId: "dave",
       micros: 500,
       reason: "admin",
     });
+    // reserve 200 → spendable 300 left
     await reserveCustomer({
       accountId: "dave",
       requestId: "req-3",
@@ -91,9 +125,38 @@ describe("reserve + settle", () => {
     });
     const settled = await settleCustomer({
       requestId: "req-3",
-      actualMicros: 999,
+      actualMicros: 450,
     });
-    expect(settled).toMatchObject({ ok: true, balance: 300, charged: 200 });
+    // charged = 200 reserved + 250 from balance; underpaid 0; balance 50
+    expect(settled).toMatchObject({
+      ok: true,
+      balance: 50,
+      charged: 450,
+    });
+  });
+
+  it("reports underpaid when shortfall exceeds spendable", async () => {
+    await creditCustomer({
+      accountId: "dana",
+      micros: 300,
+      reason: "admin",
+    });
+    await reserveCustomer({
+      accountId: "dana",
+      requestId: "req-3b",
+      micros: 200,
+    });
+    const settled = await settleCustomer({
+      requestId: "req-3b",
+      actualMicros: 500,
+    });
+    // reserved 200 + spendable 100 = 300 charged, underpaid 200, balance 0
+    expect(settled).toMatchObject({
+      ok: true,
+      balance: 0,
+      charged: 300,
+      underpaid: 200,
+    });
   });
 
   it("rejects duplicate reserve ids", async () => {

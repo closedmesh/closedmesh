@@ -33,12 +33,18 @@ import {
   estimateCompletionTokensFromText,
   extractDeltaContent,
 } from "../../../../lib/stream-usage";
+import {
+  StreamIdleTimeoutError,
+  withIdleTimeout,
+} from "../../../../lib/stream-timeout";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 /** Upstream connect/headers budget (ms). Streaming continues after this. */
 const UPSTREAM_CONNECT_TIMEOUT_MS = 45_000;
+/** No SSE bytes for this long → abort and settle delivered tokens. */
+const STREAM_IDLE_TIMEOUT_MS = 90_000;
 
 export function OPTIONS(req: Request) {
   return preflightResponse(req);
@@ -395,7 +401,11 @@ export async function POST(req: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const { done, value } = await reader.read();
+        const { done, value } = await withIdleTimeout(
+          reader.read(),
+          STREAM_IDLE_TIMEOUT_MS,
+          "body",
+        );
         if (done) {
           const finalUsage = resolveUsage();
           const charged = requestCostMicros({
@@ -445,7 +455,10 @@ export async function POST(req: Request) {
         }
       } catch (err) {
         // Charge for whatever was already delivered; don't zero-out after
-        // the customer received tokens.
+        // the customer received tokens. Idle timeout cancels the upstream read.
+        if (err instanceof StreamIdleTimeoutError) {
+          void reader.cancel().catch(() => {});
+        }
         const finalUsage = resolveUsage();
         const charged = requestCostMicros({
           modelId,

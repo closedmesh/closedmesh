@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import type { ParsedTransactionWithMeta } from "@solana/web3.js";
-import { extractDepositsByOwnerDelta } from "./solana-deposits";
+import { Keypair, type ParsedTransactionWithMeta } from "@solana/web3.js";
+import {
+  extractDeposits,
+  extractDepositsByOwnerDelta,
+  extractDepositsFromSplTransfers,
+} from "./solana-deposits";
 import { SOLANA_USDC_MINT } from "./solana-config";
+
+const TREASURY = Keypair.generate().publicKey.toBase58();
+const SENDER = Keypair.generate().publicKey.toBase58();
+const TREASURY_ATA = Keypair.generate().publicKey;
+const SENDER_ATA = Keypair.generate().publicKey;
+const TOKEN_PROGRAM = Keypair.generate().publicKey;
 
 function fakeTx(input: {
   sig: string;
@@ -11,11 +21,39 @@ function fakeTx(input: {
   treasuryPost: string;
   fromPre: string;
   fromPost: string;
+  spl?: boolean;
 }): ParsedTransactionWithMeta {
+  const instructions = input.spl
+    ? [
+        {
+          program: "spl-token",
+          programId: TOKEN_PROGRAM,
+          parsed: {
+            type: "transferChecked",
+            info: {
+              authority: input.from,
+              source: SENDER_ATA.toBase58(),
+              destination: TREASURY_ATA.toBase58(),
+              mint: SOLANA_USDC_MINT,
+              tokenAmount: { amount: "5000000", decimals: 6 },
+            },
+          },
+        },
+      ]
+    : [];
+
   return {
     transaction: {
       signatures: [input.sig],
-      message: { accountKeys: [], instructions: [], recentBlockhash: "" },
+      message: {
+        accountKeys: [
+          { pubkey: Keypair.generate().publicKey, signer: true, writable: true },
+          { pubkey: TREASURY_ATA, signer: false, writable: true },
+          { pubkey: SENDER_ATA, signer: false, writable: true },
+        ],
+        instructions,
+        recentBlockhash: "",
+      },
     },
     meta: {
       err: null,
@@ -24,7 +62,7 @@ function fakeTx(input: {
       postBalances: [],
       preTokenBalances: [
         {
-          accountIndex: 0,
+          accountIndex: 1,
           mint: SOLANA_USDC_MINT,
           owner: input.treasury,
           uiTokenAmount: {
@@ -35,7 +73,7 @@ function fakeTx(input: {
           },
         },
         {
-          accountIndex: 1,
+          accountIndex: 2,
           mint: SOLANA_USDC_MINT,
           owner: input.from,
           uiTokenAmount: {
@@ -48,7 +86,7 @@ function fakeTx(input: {
       ],
       postTokenBalances: [
         {
-          accountIndex: 0,
+          accountIndex: 1,
           mint: SOLANA_USDC_MINT,
           owner: input.treasury,
           uiTokenAmount: {
@@ -59,7 +97,7 @@ function fakeTx(input: {
           },
         },
         {
-          accountIndex: 1,
+          accountIndex: 2,
           mint: SOLANA_USDC_MINT,
           owner: input.from,
           uiTokenAmount: {
@@ -79,24 +117,25 @@ function fakeTx(input: {
 }
 
 describe("extractDepositsByOwnerDelta", () => {
-  it("detects a USDC top-up into the treasury", () => {
+  it("prefers exact balance match attribution", () => {
     const deps = extractDepositsByOwnerDelta(
       fakeTx({
         sig: "sig1",
-        treasury: "Treasury1111111111111111111111111111111",
-        from: "Sender111111111111111111111111111111111",
+        treasury: TREASURY,
+        from: SENDER,
         treasuryPre: "1000000",
         treasuryPost: "6000000",
         fromPre: "10000000",
         fromPost: "5000000",
       }),
-      "Treasury1111111111111111111111111111111",
+      TREASURY,
     );
     expect(deps).toEqual([
       {
         signature: "sig1",
-        fromWallet: "Sender111111111111111111111111111111111",
+        fromWallet: SENDER,
         amountAtomic: 5_000_000,
+        attribution: "balance_match",
       },
     ]);
   });
@@ -106,15 +145,60 @@ describe("extractDepositsByOwnerDelta", () => {
       extractDepositsByOwnerDelta(
         fakeTx({
           sig: "sig2",
-          treasury: "Treasury1111111111111111111111111111111",
-          from: "Sender111111111111111111111111111111111",
+          treasury: TREASURY,
+          from: SENDER,
           treasuryPre: "5000000",
           treasuryPost: "5000000",
           fromPre: "10000000",
           fromPost: "9000000",
         }),
-        "Treasury1111111111111111111111111111111",
+        TREASURY,
       ),
     ).toEqual([]);
+  });
+});
+
+describe("extractDepositsFromSplTransfers", () => {
+  it("attributes via transferChecked into treasury ATA", () => {
+    const deps = extractDepositsFromSplTransfers(
+      fakeTx({
+        sig: "sig-spl",
+        treasury: TREASURY,
+        from: SENDER,
+        treasuryPre: "0",
+        treasuryPost: "5000000",
+        fromPre: "5000000",
+        fromPost: "0",
+        spl: true,
+      }),
+      TREASURY,
+    );
+    expect(deps).toEqual([
+      {
+        signature: "sig-spl",
+        fromWallet: SENDER,
+        amountAtomic: 5_000_000,
+        attribution: "spl_transfer",
+      },
+    ]);
+  });
+});
+
+describe("extractDeposits", () => {
+  it("prefers SPL over balance heuristics", () => {
+    const deps = extractDeposits(
+      fakeTx({
+        sig: "sig-pref",
+        treasury: TREASURY,
+        from: SENDER,
+        treasuryPre: "0",
+        treasuryPost: "5000000",
+        fromPre: "5000000",
+        fromPost: "0",
+        spl: true,
+      }),
+      TREASURY,
+    );
+    expect(deps[0]?.attribution).toBe("spl_transfer");
   });
 });

@@ -383,17 +383,56 @@ export async function reserveCustomer(input: {
   return { ok: true, balance: next };
 }
 
+export type SettleResult =
+  | {
+      ok: true;
+      balance: number;
+      charged: number;
+      /** actual − charged when balance couldn't cover a shortfall */
+      underpaid?: number;
+      idempotent?: boolean;
+    }
+  | { ok: false; error: string };
+
 /**
- * Finalize a reserve: charge actual cost, release unused hold back to balance.
- * Idempotent: repeating settle returns the first result.
+ * Apply settle math: charge up to reserved + remaining spendable balance.
+ * Pure helper so shortfall behaviour is unit-tested.
+ */
+export function computeSettleAmounts(input: {
+  reserved: number;
+  actual: number;
+  spendableBalance: number;
+}): { charged: number; release: number; shortfallDebit: number; underpaid: number } {
+  const reserved = Math.max(0, Math.floor(input.reserved));
+  const actual = Math.max(0, Math.floor(input.actual));
+  const spendable = Math.max(0, Math.floor(input.spendableBalance));
+  if (actual <= reserved) {
+    return {
+      charged: actual,
+      release: reserved - actual,
+      shortfallDebit: 0,
+      underpaid: 0,
+    };
+  }
+  const wantExtra = actual - reserved;
+  const shortfallDebit = Math.min(wantExtra, spendable);
+  const charged = reserved + shortfallDebit;
+  return {
+    charged,
+    release: 0,
+    shortfallDebit,
+    underpaid: actual - charged,
+  };
+}
+
+/**
+ * Finalize a reserve: charge actual cost (may pull shortfall from balance),
+ * release unused hold. Idempotent per requestId.
  */
 export async function settleCustomer(input: {
   requestId: string;
   actualMicros: number;
-}): Promise<
-  | { ok: true; balance: number; charged: number; idempotent?: boolean }
-  | { ok: false; error: string }
-> {
+}): Promise<SettleResult> {
   const requestId = input.requestId.trim();
   if (!requestId) return { ok: false, error: "invalid_request" };
   if (!Number.isFinite(input.actualMicros) || input.actualMicros < 0) {
@@ -409,11 +448,12 @@ export async function settleCustomer(input: {
       if (prior != null) {
         const parsed = (
           typeof prior === "string" ? JSON.parse(prior) : prior
-        ) as { charged: number; balance: number };
+        ) as { charged: number; balance: number; underpaid?: number };
         return {
           ok: true,
           balance: Number(parsed.balance),
           charged: Number(parsed.charged),
+          underpaid: parsed.underpaid ? Number(parsed.underpaid) : undefined,
           idempotent: true,
         };
       }
@@ -421,7 +461,6 @@ export async function settleCustomer(input: {
       const rKey = reserveKey(requestId);
       const raw = await redis.get<string | null>(rKey);
       if (raw == null) {
-        // Maybe reclaimed already — treat as zero charge settle miss.
         return { ok: false, error: "reserve_missing" };
       }
       const parsed = (
@@ -429,17 +468,70 @@ export async function settleCustomer(input: {
       ) as ReserveRecord;
       const reserved = Number(parsed.micros);
       const id = parsed.accountId;
-      const charged = Math.min(actual, reserved);
-      const release = reserved - charged;
-      let balance = (await getCustomerBalance(id)) ?? 0;
-      if (release > 0) {
-        balance = Number(await redis.incrby(balanceKey(id), release));
-      } else {
-        balance = (await getCustomerBalance(id)) ?? 0;
+      const spendableRaw = await redis.get<number | string | null>(
+        balanceKey(id),
+      );
+      const spendable =
+        spendableRaw == null ? 0 : Math.max(0, Number(spendableRaw) || 0);
+      const amounts = computeSettleAmounts({
+        reserved,
+        actual,
+        spendableBalance: spendable,
+      });
+
+      if (amounts.release > 0) {
+        await redis.incrby(balanceKey(id), amounts.release);
       }
+      if (amounts.shortfallDebit > 0) {
+        const after = await redis.decrby(balanceKey(id), amounts.shortfallDebit);
+        if (Number(after) < 0) {
+          // Race: put back and charge reserved only.
+          await redis.incrby(balanceKey(id), amounts.shortfallDebit);
+          const balance = Number(
+            (await redis.get<number | string | null>(balanceKey(id))) ?? 0,
+          );
+          await redis.del(rKey);
+          await redis.zrem(RESERVE_EXP_ZSET, requestId);
+          const charged = reserved;
+          const underpaid = Math.max(0, actual - charged);
+          const settledPayload = JSON.stringify({
+            charged,
+            balance,
+            underpaid,
+          });
+          await redis.set(settledKey(requestId), settledPayload, {
+            ex: LEDGER_TTL_SEC,
+          });
+          await appendJournal(id, {
+            kind: "settle",
+            requestId,
+            reserved,
+            charged,
+            released: 0,
+            shortfallDebit: 0,
+            underpaid,
+            balance,
+            note: "shortfall_race",
+          });
+          return {
+            ok: true,
+            balance,
+            charged,
+            underpaid: underpaid || undefined,
+          };
+        }
+      }
+
+      const balance = Number(
+        (await redis.get<number | string | null>(balanceKey(id))) ?? 0,
+      );
       await redis.del(rKey);
       await redis.zrem(RESERVE_EXP_ZSET, requestId);
-      const settledPayload = JSON.stringify({ charged, balance });
+      const settledPayload = JSON.stringify({
+        charged: amounts.charged,
+        balance,
+        underpaid: amounts.underpaid,
+      });
       await redis.set(settledKey(requestId), settledPayload, {
         ex: LEDGER_TTL_SEC,
       });
@@ -447,11 +539,18 @@ export async function settleCustomer(input: {
         kind: "settle",
         requestId,
         reserved,
-        charged,
-        released: release,
+        charged: amounts.charged,
+        released: amounts.release,
+        shortfallDebit: amounts.shortfallDebit,
+        underpaid: amounts.underpaid,
         balance,
       });
-      return { ok: true, balance, charged };
+      return {
+        ok: true,
+        balance,
+        charged: amounts.charged,
+        underpaid: amounts.underpaid || undefined,
+      };
     } catch (err) {
       return {
         ok: false,
@@ -471,19 +570,34 @@ export async function settleCustomer(input: {
   }
   const held = memory.reserves.get(requestId);
   if (!held) return { ok: false, error: "reserve_missing" };
-  const charged = Math.min(actual, held.micros);
-  const release = held.micros - charged;
-  const next = (memory.balances.get(held.accountId) ?? 0) + release;
+  const spendable = memory.balances.get(held.accountId) ?? 0;
+  const amounts = computeSettleAmounts({
+    reserved: held.micros,
+    actual,
+    spendableBalance: spendable,
+  });
+  const next =
+    spendable + amounts.release - amounts.shortfallDebit;
   memory.balances.set(held.accountId, next);
   memory.reserves.delete(requestId);
-  memory.settled.set(requestId, { charged, balance: next });
+  memory.settled.set(requestId, {
+    charged: amounts.charged,
+    balance: next,
+  });
   await appendJournal(held.accountId, {
     kind: "settle",
     requestId,
     reserved: held.micros,
-    charged,
-    released: release,
+    charged: amounts.charged,
+    released: amounts.release,
+    shortfallDebit: amounts.shortfallDebit,
+    underpaid: amounts.underpaid,
     balance: next,
   });
-  return { ok: true, balance: next, charged };
+  return {
+    ok: true,
+    balance: next,
+    charged: amounts.charged,
+    underpaid: amounts.underpaid || undefined,
+  };
 }

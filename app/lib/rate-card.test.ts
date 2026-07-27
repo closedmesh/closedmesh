@@ -54,19 +54,18 @@ describe("requestCostMicros / reserve", () => {
     );
   });
 
-  it("reserves prompt + max completion", () => {
+  it("reserves prompt + max completion with buffer", () => {
+    const base = requestCostMicros({
+      modelId: "Qwen3-8B-Q4_K_M",
+      promptTokens: 100,
+      completionTokens: 256,
+    });
     const reserve = estimateReserveMicros({
       modelId: "Qwen3-8B-Q4_K_M",
       promptTokens: 100,
       maxCompletionTokens: 256,
     });
-    expect(reserve).toBe(
-      requestCostMicros({
-        modelId: "Qwen3-8B-Q4_K_M",
-        promptTokens: 100,
-        completionTokens: 256,
-      }),
-    );
+    expect(reserve).toBe(Math.max(1, Math.ceil(base * 1.25)));
   });
 });
 

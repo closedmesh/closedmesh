@@ -138,20 +138,25 @@ export function requestCostMicros(input: {
   );
 }
 
+/** Headroom on reserves so prompt-estimate undercount rarely hits the cap. */
+export const RESERVE_BUFFER = 1.25;
+
 /**
- * Conservative reserve before streaming: bill prompt now + max completion.
- * Unused reserve is released on settle.
+ * Conservative reserve before streaming: bill prompt + max completion,
+ * then × {@link RESERVE_BUFFER}. Unused reserve is released on settle;
+ * settle may also pull a shortfall from remaining balance.
  */
 export function estimateReserveMicros(input: {
   modelId: string;
   promptTokens: number;
   maxCompletionTokens: number;
 }): number {
-  return requestCostMicros({
+  const base = requestCostMicros({
     modelId: input.modelId,
     promptTokens: input.promptTokens,
     completionTokens: Math.max(0, input.maxCompletionTokens),
   });
+  return Math.max(1, Math.ceil(base * RESERVE_BUFFER));
 }
 
 /** Rough prompt-token estimate when the client hasn't sent usage yet. */
