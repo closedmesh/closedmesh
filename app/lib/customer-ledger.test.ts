@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   creditCustomer,
   getCustomerBalance,
+  reclaimExpiredReserves,
   reserveCustomer,
   resetCustomerLedgerMemory,
   settleCustomer,
@@ -74,7 +75,7 @@ describe("reserve + settle", () => {
       requestId: "req-2",
       actualMicros: 150,
     });
-    expect(settled).toEqual({ ok: true, balance: 850, charged: 150 });
+    expect(settled).toMatchObject({ ok: true, balance: 850, charged: 150 });
   });
 
   it("caps charge at reserved amount", async () => {
@@ -92,7 +93,7 @@ describe("reserve + settle", () => {
       requestId: "req-3",
       actualMicros: 999,
     });
-    expect(settled).toEqual({ ok: true, balance: 300, charged: 200 });
+    expect(settled).toMatchObject({ ok: true, balance: 300, charged: 200 });
   });
 
   it("rejects duplicate reserve ids", async () => {
@@ -112,5 +113,52 @@ describe("reserve + settle", () => {
       micros: 100,
     });
     expect(dup).toEqual({ ok: false, error: "reserve_exists" });
+  });
+
+  it("settle is idempotent", async () => {
+    await creditCustomer({
+      accountId: "frank",
+      micros: 500,
+      reason: "admin",
+    });
+    await reserveCustomer({
+      accountId: "frank",
+      requestId: "req-5",
+      micros: 200,
+    });
+    const first = await settleCustomer({
+      requestId: "req-5",
+      actualMicros: 50,
+    });
+    const second = await settleCustomer({
+      requestId: "req-5",
+      actualMicros: 999,
+    });
+    expect(first).toMatchObject({ ok: true, charged: 50, balance: 450 });
+    expect(second).toMatchObject({
+      ok: true,
+      charged: 50,
+      balance: 450,
+      idempotent: true,
+    });
+  });
+
+  it("reclaims expired holds back to the balance", async () => {
+    await creditCustomer({
+      accountId: "grace",
+      micros: 1_000,
+      reason: "admin",
+    });
+    const held = await reserveCustomer({
+      accountId: "grace",
+      requestId: "req-exp",
+      micros: 400,
+      ttlSec: 0, // expires immediately
+    });
+    expect(held).toEqual({ ok: true, balance: 600 });
+    const reclaimed = await reclaimExpiredReserves(10);
+    expect(reclaimed.reclaimed).toBeGreaterThanOrEqual(1);
+    expect(reclaimed.micros).toBeGreaterThanOrEqual(400);
+    await expect(getCustomerBalance("grace")).resolves.toBe(1_000);
   });
 });

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { syncSolanaDeposits } from "../../../lib/solana-deposits";
 import { solanaDepositsConfigured } from "../../../lib/solana-config";
+import { reclaimExpiredReserves } from "../../../lib/customer-ledger";
 
 /**
  * GET/POST /api/account/deposit-sync
@@ -39,11 +40,12 @@ async function handle(req: Request) {
     );
   }
 
+  const reclaimed = await reclaimExpiredReserves(isCron ? 50 : 25);
   const result = await syncSolanaDeposits({
     onlyWallet: wallet,
     limit: isCron ? 40 : 25,
   });
-  return NextResponse.json({ ok: true, ...result });
+  return NextResponse.json({ ok: true, reclaimed, ...result });
 }
 
 export async function GET(req: Request) {

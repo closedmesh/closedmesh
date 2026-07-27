@@ -1,8 +1,11 @@
 /**
  * Phase 5.C — customer credit ledger (USD micros, rail-agnostic).
  *
- * Separate from peer earned-credits (`senda:credits:*`). Sprint 1 = Redis;
- * Vitest uses an in-memory map when Upstash is unavailable.
+ * Reserve model (hardened before paid API preview launch):
+ * - Atomic Redis reserve (Lua) so concurrent requests can't overdraw.
+ * - Holds are indexed by expiry; reclaimExpiredReserves() refunds abandoned
+ *   holds (hang / killed isolate) so TTL never orphans DECRBY'd funds.
+ * - settle is idempotent per requestId.
  *
  * See `internal/designs/phase-5ce-usdc-paid-api.md`.
  */
@@ -11,15 +14,25 @@ import { getRedis } from "./redis";
 
 const BALANCE_PREFIX = "senda:cust:balance";
 const RESERVE_PREFIX = "senda:cust:reserve";
+const SETTLED_PREFIX = "senda:cust:settled";
 const DEPOSIT_PREFIX = "senda:cust:deposit";
 const LEDGER_PREFIX = "senda:cust:ledger";
+const RESERVE_EXP_ZSET = "senda:cust:reserves:exp";
 const LEDGER_TTL_SEC = 365 * 24 * 3600;
-const RESERVE_TTL_SEC = 30 * 60;
+/** Max time a hold may live before reclaim refunds it. */
+export const RESERVE_TTL_SEC = 10 * 60;
 const LEDGER_MAX_ENTRIES = 100;
+
+type ReserveRecord = {
+  accountId: string;
+  micros: number;
+  expiresAt: number;
+};
 
 type MemoryStore = {
   balances: Map<string, number>;
-  reserves: Map<string, { accountId: string; micros: number }>;
+  reserves: Map<string, ReserveRecord>;
+  settled: Map<string, { charged: number; balance: number }>;
   deposits: Set<string>;
   journal: Map<string, string[]>;
 };
@@ -27,6 +40,7 @@ type MemoryStore = {
 const memory: MemoryStore = {
   balances: new Map(),
   reserves: new Map(),
+  settled: new Map(),
   deposits: new Set(),
   journal: new Map(),
 };
@@ -47,6 +61,7 @@ export function customerStoreReady(): boolean {
 export function resetCustomerLedgerMemory(): void {
   memory.balances.clear();
   memory.reserves.clear();
+  memory.settled.clear();
   memory.deposits.clear();
   memory.journal.clear();
 }
@@ -57,6 +72,10 @@ function balanceKey(accountId: string): string {
 
 function reserveKey(requestId: string): string {
   return `${RESERVE_PREFIX}:${requestId}`;
+}
+
+function settledKey(requestId: string): string {
+  return `${SETTLED_PREFIX}:${requestId}`;
 }
 
 function depositKey(txHash: string): string {
@@ -92,9 +111,87 @@ async function appendJournal(
   memory.journal.set(accountId, prev.slice(0, LEDGER_MAX_ENTRIES));
 }
 
+/**
+ * Refund holds whose expiry has passed and were never settled.
+ * Safe to call often; bound by `limit`.
+ */
+export async function reclaimExpiredReserves(
+  limit = 25,
+): Promise<{ reclaimed: number; micros: number }> {
+  const now = Date.now();
+  let reclaimed = 0;
+  let microsTotal = 0;
+
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const ids = await redis.zrange(RESERVE_EXP_ZSET, 0, now, {
+        byScore: true,
+        offset: 0,
+        count: limit,
+      });
+      for (const requestId of ids) {
+        const id = String(requestId);
+        const settled = await redis.get(settledKey(id));
+        if (settled != null) {
+          await redis.zrem(RESERVE_EXP_ZSET, id);
+          continue;
+        }
+        const raw = await redis.get<string | null>(reserveKey(id));
+        await redis.zrem(RESERVE_EXP_ZSET, id);
+        if (raw == null) continue;
+        const parsed = (
+          typeof raw === "string" ? JSON.parse(raw) : raw
+        ) as ReserveRecord;
+        const hold = Math.floor(Number(parsed.micros) || 0);
+        if (hold > 0 && parsed.accountId) {
+          const balance = await redis.incrby(balanceKey(parsed.accountId), hold);
+          await redis.del(reserveKey(id));
+          await appendJournal(parsed.accountId, {
+            kind: "reclaim",
+            requestId: id,
+            micros: hold,
+            balance: Number(balance),
+          });
+          microsTotal += hold;
+          reclaimed += 1;
+        } else {
+          await redis.del(reserveKey(id));
+        }
+      }
+    } catch {
+      // best-effort
+    }
+    return { reclaimed, micros: microsTotal };
+  }
+
+  if (!useMemory()) return { reclaimed: 0, micros: 0 };
+  for (const [requestId, rec] of [...memory.reserves.entries()]) {
+    if (reclaimed >= limit) break;
+    if (rec.expiresAt > now) continue;
+    if (memory.settled.has(requestId)) {
+      memory.reserves.delete(requestId);
+      continue;
+    }
+    const next = (memory.balances.get(rec.accountId) ?? 0) + rec.micros;
+    memory.balances.set(rec.accountId, next);
+    memory.reserves.delete(requestId);
+    await appendJournal(rec.accountId, {
+      kind: "reclaim",
+      requestId,
+      micros: rec.micros,
+      balance: next,
+    });
+    microsTotal += rec.micros;
+    reclaimed += 1;
+  }
+  return { reclaimed, micros: microsTotal };
+}
+
 export async function getCustomerBalance(
   accountId: string,
 ): Promise<number | null> {
+  await reclaimExpiredReserves(10);
   const id = normalizeAccountId(accountId);
   if (!id) return null;
   const redis = getRedis();
@@ -122,6 +219,7 @@ export async function creditCustomer(input: {
   reason: "admin" | "usdc_deposit" | "reserve_release";
   depositId?: string;
 }): Promise<{ ok: true; balance: number } | { ok: false; error: string }> {
+  await reclaimExpiredReserves(10);
   const id = normalizeAccountId(input.accountId);
   if (!id) return { ok: false, error: "invalid_account" };
   if (!Number.isFinite(input.micros) || input.micros <= 0) {
@@ -162,7 +260,6 @@ export async function creditCustomer(input: {
     }
   }
 
-  // Memory path (tests / explicit memory mode).
   if (input.depositId) {
     if (memory.deposits.has(input.depositId)) {
       return { ok: true, balance: memory.balances.get(id) ?? 0 };
@@ -181,6 +278,28 @@ export async function creditCustomer(input: {
   return { ok: true, balance: next };
 }
 
+const RESERVE_LUA = `
+local bal = tonumber(redis.call('GET', KEYS[1]) or '0')
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  return {-1, bal}
+end
+if redis.call('EXISTS', KEYS[4]) == 1 then
+  return {-1, bal}
+end
+local need = tonumber(ARGV[1])
+if bal < need then
+  return {-2, bal}
+end
+local next = redis.call('DECRBY', KEYS[1], need)
+if next < 0 then
+  redis.call('INCRBY', KEYS[1], need)
+  return {-2, bal}
+end
+redis.call('SET', KEYS[2], ARGV[2])
+redis.call('ZADD', KEYS[3], ARGV[3], ARGV[4])
+return {1, next}
+`;
+
 /**
  * Hold funds for an in-flight request. Fails if balance < micros.
  */
@@ -188,7 +307,10 @@ export async function reserveCustomer(input: {
   accountId: string;
   requestId: string;
   micros: number;
+  /** Override TTL for tests. */
+  ttlSec?: number;
 }): Promise<{ ok: true; balance: number } | { ok: false; error: string }> {
+  await reclaimExpiredReserves(25);
   const id = normalizeAccountId(input.accountId);
   const requestId = input.requestId.trim();
   if (!id || !requestId) return { ok: false, error: "invalid_account" };
@@ -196,36 +318,46 @@ export async function reserveCustomer(input: {
     return { ok: false, error: "invalid_amount" };
   }
   const micros = Math.floor(input.micros);
+  const ttlSec = input.ttlSec ?? RESERVE_TTL_SEC;
+  const expiresAt = Date.now() + ttlSec * 1000;
   if (!customerStoreReady()) return { ok: false, error: "store_unavailable" };
 
   const redis = getRedis();
   if (redis) {
     try {
-      const rKey = reserveKey(requestId);
-      const existing = await redis.get(rKey);
-      if (existing != null) return { ok: false, error: "reserve_exists" };
+      const record: ReserveRecord = { accountId: id, micros, expiresAt };
+      const script = redis.createScript<number[]>(RESERVE_LUA);
+      const result = await script.eval(
+        [
+          balanceKey(id),
+          reserveKey(requestId),
+          RESERVE_EXP_ZSET,
+          settledKey(requestId),
+        ],
+        [
+          String(micros),
+          JSON.stringify(record),
+          String(expiresAt),
+          requestId,
+        ],
+      );
 
-      const balanceRaw = await redis.get<number | string | null>(balanceKey(id));
-      const balance = balanceRaw == null ? 0 : Number(balanceRaw);
-      if (!Number.isFinite(balance) || balance < micros) {
-        return { ok: false, error: "insufficient_funds" };
-      }
-      const next = await redis.decrby(balanceKey(id), micros);
-      if (Number(next) < 0) {
-        await redis.incrby(balanceKey(id), micros);
-        return { ok: false, error: "insufficient_funds" };
-      }
-      await redis.set(rKey, JSON.stringify({ accountId: id, micros }), {
-        ex: RESERVE_TTL_SEC,
-      });
+      const code = Number(result?.[0]);
+      const balance = Number(result?.[1]);
+      if (code === -1) return { ok: false, error: "reserve_exists" };
+      if (code === -2) return { ok: false, error: "insufficient_funds" };
+      if (code !== 1) return { ok: false, error: "redis_error" };
+
       await appendJournal(id, {
         kind: "reserve",
         micros,
         requestId,
-        balance: Number(next),
+        expiresAt,
+        balance,
       });
-      return { ok: true, balance: Number(next) };
+      return { ok: true, balance };
     } catch (err) {
+      // Fallback non-atomic path if eval unsupported (shouldn't happen on Upstash).
       return {
         ok: false,
         error: err instanceof Error ? err.message : "redis_error",
@@ -233,18 +365,19 @@ export async function reserveCustomer(input: {
     }
   }
 
-  if (memory.reserves.has(requestId)) {
+  if (memory.reserves.has(requestId) || memory.settled.has(requestId)) {
     return { ok: false, error: "reserve_exists" };
   }
   const balance = memory.balances.get(id) ?? 0;
   if (balance < micros) return { ok: false, error: "insufficient_funds" };
   const next = balance - micros;
   memory.balances.set(id, next);
-  memory.reserves.set(requestId, { accountId: id, micros });
+  memory.reserves.set(requestId, { accountId: id, micros, expiresAt });
   await appendJournal(id, {
     kind: "reserve",
     micros,
     requestId,
+    expiresAt,
     balance: next,
   });
   return { ok: true, balance: next };
@@ -252,11 +385,15 @@ export async function reserveCustomer(input: {
 
 /**
  * Finalize a reserve: charge actual cost, release unused hold back to balance.
+ * Idempotent: repeating settle returns the first result.
  */
 export async function settleCustomer(input: {
   requestId: string;
   actualMicros: number;
-}): Promise<{ ok: true; balance: number; charged: number } | { ok: false; error: string }> {
+}): Promise<
+  | { ok: true; balance: number; charged: number; idempotent?: boolean }
+  | { ok: false; error: string }
+> {
   const requestId = input.requestId.trim();
   if (!requestId) return { ok: false, error: "invalid_request" };
   if (!Number.isFinite(input.actualMicros) || input.actualMicros < 0) {
@@ -268,13 +405,28 @@ export async function settleCustomer(input: {
   const redis = getRedis();
   if (redis) {
     try {
+      const prior = await redis.get<string | null>(settledKey(requestId));
+      if (prior != null) {
+        const parsed = (
+          typeof prior === "string" ? JSON.parse(prior) : prior
+        ) as { charged: number; balance: number };
+        return {
+          ok: true,
+          balance: Number(parsed.balance),
+          charged: Number(parsed.charged),
+          idempotent: true,
+        };
+      }
+
       const rKey = reserveKey(requestId);
       const raw = await redis.get<string | null>(rKey);
-      if (raw == null) return { ok: false, error: "reserve_missing" };
-      const parsed = JSON.parse(typeof raw === "string" ? raw : String(raw)) as {
-        accountId: string;
-        micros: number;
-      };
+      if (raw == null) {
+        // Maybe reclaimed already — treat as zero charge settle miss.
+        return { ok: false, error: "reserve_missing" };
+      }
+      const parsed = (
+        typeof raw === "string" ? JSON.parse(raw) : raw
+      ) as ReserveRecord;
       const reserved = Number(parsed.micros);
       const id = parsed.accountId;
       const charged = Math.min(actual, reserved);
@@ -286,6 +438,11 @@ export async function settleCustomer(input: {
         balance = (await getCustomerBalance(id)) ?? 0;
       }
       await redis.del(rKey);
+      await redis.zrem(RESERVE_EXP_ZSET, requestId);
+      const settledPayload = JSON.stringify({ charged, balance });
+      await redis.set(settledKey(requestId), settledPayload, {
+        ex: LEDGER_TTL_SEC,
+      });
       await appendJournal(id, {
         kind: "settle",
         requestId,
@@ -303,6 +460,15 @@ export async function settleCustomer(input: {
     }
   }
 
+  const priorMem = memory.settled.get(requestId);
+  if (priorMem) {
+    return {
+      ok: true,
+      balance: priorMem.balance,
+      charged: priorMem.charged,
+      idempotent: true,
+    };
+  }
   const held = memory.reserves.get(requestId);
   if (!held) return { ok: false, error: "reserve_missing" };
   const charged = Math.min(actual, held.micros);
@@ -310,6 +476,7 @@ export async function settleCustomer(input: {
   const next = (memory.balances.get(held.accountId) ?? 0) + release;
   memory.balances.set(held.accountId, next);
   memory.reserves.delete(requestId);
+  memory.settled.set(requestId, { charged, balance: next });
   await appendJournal(held.accountId, {
     kind: "settle",
     requestId,

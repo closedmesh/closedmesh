@@ -14,6 +14,7 @@ import { recordServedByDecision } from "../../../../lib/mesh-share";
 import { decideFallback } from "../../../../lib/fallback-provider";
 import {
   customerStoreReady,
+  reclaimExpiredReserves,
   reserveCustomer,
   settleCustomer,
 } from "../../../../lib/customer-ledger";
@@ -28,9 +29,16 @@ import {
   runtimeBaseUrl,
 } from "../../../../lib/runtime-proxy";
 import { appendSessionReceipt } from "../../../../lib/session-receipts";
+import {
+  estimateCompletionTokensFromText,
+  extractDeltaContent,
+} from "../../../../lib/stream-usage";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
+
+/** Upstream connect/headers budget (ms). Streaming continues after this. */
+const UPSTREAM_CONNECT_TIMEOUT_MS = 45_000;
 
 export function OPTIONS(req: Request) {
   return preflightResponse(req);
@@ -131,11 +139,40 @@ async function accrueMeshCredits(input: {
   });
 }
 
+async function settleSafe(
+  requestId: string,
+  actualMicros: number,
+): Promise<{ balance: number | null; charged: number }> {
+  const settled = await settleCustomer({ requestId, actualMicros });
+  if (settled.ok) {
+    return { balance: settled.balance, charged: settled.charged };
+  }
+  return { balance: null, charged: 0 };
+}
+
+async function fetchUpstream(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), UPSTREAM_CONNECT_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: ac.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
- * POST /v1/chat/completions — paid OpenAI-compatible surface (Phase 5.E Slice 1).
- * Auth: Bearer ck_…  Mesh-only until Slice 3 enables paid fallback.
+ * POST /v1/chat/completions — paid OpenAI-compatible surface (Phase 5.E).
+ * Auth: Bearer ck_…
+ *
+ * Billing hardening: atomic reserve, reclaimable holds, connect timeout,
+ * settle on all exits, charge delivered tokens when usage is missing.
  */
 export async function POST(req: Request) {
+  void reclaimExpiredReserves(25);
+
   if (!paidApiEnabled()) {
     return jsonError(req, 503, "Paid API is not enabled", "paid_api_disabled");
   }
@@ -187,13 +224,17 @@ export async function POST(req: Request) {
     return jsonError(req, status, reserved.error, reserved.error);
   }
 
+  let settled = false;
+  const finishSettle = async (actualMicros: number) => {
+    if (settled) return settleSafe(requestId, actualMicros);
+    settled = true;
+    return settleSafe(requestId, actualMicros);
+  };
+
   const peers = await fetchMeshPeersCached();
   const sla = evaluateSla(modelId, peers);
-  // Slice 3: paid path may use OpenRouter when mesh misses SLA (key set).
-  // Free /api/chat keeps its own IP budget; paid uses customer credits only.
   const decision = decideFallback(modelId, sla);
   const servedBy = decision.useFallback ? "fallback" : "mesh";
-  void recordServedByDecision(servedBy);
 
   const upstreamBody = {
     ...body,
@@ -226,21 +267,24 @@ export async function POST(req: Request) {
     if (decision.useFallback) {
       const orKey = process.env.OPENROUTER_API_KEY?.trim();
       if (!orKey) {
-        await settleCustomer({ requestId, actualMicros: 0 });
+        await finishSettle(0);
         return jsonError(req, 503, "Fallback unavailable", "fallback_disabled");
       }
-      upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          Authorization: `Bearer ${orKey}`,
-          "HTTP-Referer": "https://senda.network",
-          "X-Title": "Senda",
+      upstream = await fetchUpstream(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${orKey}`,
+            "HTTP-Referer": "https://senda.network",
+            "X-Title": "Senda",
+          },
+          body: JSON.stringify(upstreamBody),
         },
-        body: JSON.stringify(upstreamBody),
-      });
+      );
     } else {
-      upstream = await fetch(`${runtimeBaseUrl()}/chat/completions`, {
+      upstream = await fetchUpstream(`${runtimeBaseUrl()}/chat/completions`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -250,16 +294,28 @@ export async function POST(req: Request) {
       });
     }
   } catch (err) {
-    await settleCustomer({ requestId, actualMicros: 0 });
-    const message = err instanceof Error ? err.message : "upstream_error";
-    return jsonError(req, 502, message, "upstream_unreachable");
+    await finishSettle(0);
+    const aborted =
+      err instanceof Error &&
+      (err.name === "AbortError" || /abort/i.test(err.message));
+    const message = aborted
+      ? "Upstream timed out"
+      : err instanceof Error
+        ? err.message
+        : "upstream_error";
+    return jsonError(
+      req,
+      502,
+      message,
+      aborted ? "upstream_timeout" : "upstream_unreachable",
+    );
   }
 
   const servingPeer = upstream.headers.get("x-senda-serving-peer");
   if (servingPeer) headersOut["x-senda-serving-peer"] = servingPeer;
 
   if (!upstream.ok) {
-    await settleCustomer({ requestId, actualMicros: 0 });
+    await finishSettle(0);
     const text = await upstream.text().catch(() => "");
     return applyCors(
       req,
@@ -270,82 +326,93 @@ export async function POST(req: Request) {
     );
   }
 
+  // Only count successful upstream accepts toward mesh_share.
+  void recordServedByDecision(servedBy);
+
   if (!wantStream) {
-    const json = (await upstream.json()) as {
-      usage?: unknown;
-    };
-    const usage = parseUsage(json.usage) ?? {
-      promptTokens: promptEstimate,
-      completionTokens: 0,
-    };
-    const charged = requestCostMicros({
-      modelId,
-      promptTokens: usage.promptTokens,
-      completionTokens: usage.completionTokens,
-    });
-    const settled = await settleCustomer({
-      requestId,
-      actualMicros: charged,
-    });
-    headersOut["x-senda-cost-usd-micros"] = String(charged);
-    if (settled.ok) {
-      headersOut["x-senda-balance-usd-micros"] = String(settled.balance);
-    }
-    if (servedBy === "mesh") {
-      await accrueMeshCredits({
+    try {
+      const json = (await upstream.json()) as { usage?: unknown };
+      const usage = parseUsage(json.usage) ?? {
+        promptTokens: promptEstimate,
+        completionTokens: 0,
+      };
+      const charged = requestCostMicros({
         modelId,
-        peerId: servingPeer,
-        slaPeerId: sla.creditPeerId,
-        tier: sla.tier,
-        promptTokens: usage.promptTokens,
+        promptTokens: usage.promptTokens || promptEstimate,
         completionTokens: usage.completionTokens,
       });
+      const result = await finishSettle(charged);
+      headersOut["x-senda-cost-usd-micros"] = String(result.charged);
+      if (result.balance != null) {
+        headersOut["x-senda-balance-usd-micros"] = String(result.balance);
+      }
+      if (servedBy === "mesh") {
+        await accrueMeshCredits({
+          modelId,
+          peerId: servingPeer,
+          slaPeerId: sla.creditPeerId,
+          tier: sla.tier,
+          promptTokens: usage.promptTokens || promptEstimate,
+          completionTokens: usage.completionTokens,
+        });
+      }
+      return applyCors(
+        req,
+        NextResponse.json(json, { status: 200, headers: headersOut }),
+      );
+    } catch (err) {
+      await finishSettle(0);
+      const message = err instanceof Error ? err.message : "upstream_error";
+      return jsonError(req, 502, message, "upstream_body_error");
     }
-    return applyCors(
-      req,
-      NextResponse.json(json, { status: 200, headers: headersOut }),
-    );
   }
 
-  // Streaming: tee SSE, capture final usage, settle in background.
   const reader = upstream.body?.getReader();
   if (!reader) {
-    await settleCustomer({ requestId, actualMicros: 0 });
+    await finishSettle(0);
     return jsonError(req, 502, "Empty upstream stream", "upstream_empty");
   }
 
   const decoder = new TextDecoder();
   let buffer = "";
   let usage: { promptTokens: number; completionTokens: number } | null = null;
+  let streamedText = "";
+
+  const resolveUsage = () => {
+    if (usage && (usage.completionTokens > 0 || usage.promptTokens > 0)) {
+      return {
+        promptTokens: usage.promptTokens || promptEstimate,
+        completionTokens: usage.completionTokens,
+      };
+    }
+    const fromText = estimateCompletionTokensFromText(streamedText);
+    return {
+      promptTokens: promptEstimate,
+      completionTokens: fromText,
+    };
+  };
 
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         const { done, value } = await reader.read();
         if (done) {
-          const finalUsage = usage ?? {
-            promptTokens: promptEstimate,
-            completionTokens: 0,
-          };
+          const finalUsage = resolveUsage();
           const charged = requestCostMicros({
             modelId,
             promptTokens: finalUsage.promptTokens,
             completionTokens: finalUsage.completionTokens,
           });
-          const settled = await settleCustomer({
-            requestId,
-            actualMicros: charged,
-          });
-          // Trailer-like final SSE comment with cost (clients ignore unknown lines).
+          const result = await finishSettle(charged);
           const meta = `data: ${JSON.stringify({
             senda: {
-              cost_usd_micros: charged,
-              balance_usd_micros: settled.ok ? settled.balance : null,
+              cost_usd_micros: result.charged,
+              balance_usd_micros: result.balance,
               request_id: requestId,
             },
           })}\n\n`;
           controller.enqueue(new TextEncoder().encode(meta));
-          if (servedBy === "mesh") {
+          if (servedBy === "mesh" && finalUsage.completionTokens > 0) {
             await accrueMeshCredits({
               modelId,
               peerId: servingPeer,
@@ -367,6 +434,7 @@ export async function POST(req: Request) {
           if (!trimmed.startsWith("data:")) continue;
           const payload = trimmed.slice(5).trim();
           if (!payload || payload === "[DONE]") continue;
+          streamedText += extractDeltaContent(payload);
           try {
             const chunk = JSON.parse(payload) as { usage?: unknown };
             const parsed = parseUsage(chunk.usage);
@@ -376,13 +444,37 @@ export async function POST(req: Request) {
           }
         }
       } catch (err) {
-        await settleCustomer({ requestId, actualMicros: 0 });
+        // Charge for whatever was already delivered; don't zero-out after
+        // the customer received tokens.
+        const finalUsage = resolveUsage();
+        const charged = requestCostMicros({
+          modelId,
+          promptTokens: finalUsage.promptTokens,
+          completionTokens: finalUsage.completionTokens,
+        });
+        await finishSettle(charged);
+        if (servedBy === "mesh" && finalUsage.completionTokens > 0) {
+          void accrueMeshCredits({
+            modelId,
+            peerId: servingPeer,
+            slaPeerId: sla.creditPeerId,
+            tier: sla.tier,
+            promptTokens: finalUsage.promptTokens,
+            completionTokens: finalUsage.completionTokens,
+          });
+        }
         controller.error(err);
       }
     },
     cancel() {
       void reader.cancel();
-      void settleCustomer({ requestId, actualMicros: 0 });
+      const finalUsage = resolveUsage();
+      const charged = requestCostMicros({
+        modelId,
+        promptTokens: finalUsage.promptTokens,
+        completionTokens: finalUsage.completionTokens,
+      });
+      void finishSettle(charged);
     },
   });
 
