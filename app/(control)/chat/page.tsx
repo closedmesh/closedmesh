@@ -114,9 +114,9 @@ function ControlEmptyState({
 }
 
 /**
- * Soft status on the chat home while this machine is joining the mesh.
- * Join is automatic (see useSharing) — we never pitch "start sharing" as an
- * opt-in. Once connected, the top-bar Sharing control owns live status.
+ * Soft contributor status on the chat home. Chat itself always goes through
+ * `/api/chat` (public mesh) — a local runtime that is still starting or
+ * stopped must never look like chat is broken.
  */
 function SharingHomeCard() {
   const sharing = useSharing();
@@ -133,11 +133,11 @@ function SharingHomeCard() {
     return (
       <div className="mx-auto mt-7 max-w-md rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-3 text-left">
         <div className="text-[13px] font-medium text-[var(--fg)]">
-          Joining the mesh…
+          Starting this machine…
         </div>
         <div className="mt-0.5 text-[12px] text-[var(--fg-muted)]">
-          Starting the runtime on this machine so it can serve and use the
-          network.
+          You can chat now — the runtime is coming up so this Mac can also
+          serve the mesh.
         </div>
       </div>
     );
@@ -147,32 +147,31 @@ function SharingHomeCard() {
     return (
       <div className="mx-auto mt-7 max-w-md rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-3 text-left">
         <div className="text-[13px] font-medium text-[var(--fg)]">
-          Leaving the mesh…
+          Stopping this machine…
         </div>
       </div>
     );
   }
 
-  // Stopped after an auto-join miss — retry is the recovery path, not an
-  // invitation to stay private.
+  // Stopped / unknown — chat still works. Offer an optional contribute path.
   return (
     <div className="mx-auto mt-7 flex max-w-md items-center justify-between gap-4 rounded-[var(--radius-xl)] border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-3 text-left">
       <div className="min-w-0">
         <div className="text-[13px] font-medium text-[var(--fg)]">
-          Couldn&apos;t join the mesh
+          Chat works either way
         </div>
         <div className="mt-0.5 text-[12px] text-[var(--fg-muted)]">
-          The runtime isn&apos;t running on this machine. Retry, or check
-          Machine details.
+          This machine isn&apos;t sharing right now. Start it to contribute, or
+          just type below.
         </div>
       </div>
       <Button
-        variant="primary"
+        variant="secondary"
         size="sm"
         disabled={sharing.busy !== null}
         onClick={() => sharing.start()}
       >
-        {sharing.busy === "start" ? "Starting…" : "Retry"}
+        {sharing.busy === "start" ? "Starting…" : "Start"}
       </Button>
     </div>
   );

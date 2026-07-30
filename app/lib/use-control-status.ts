@@ -21,6 +21,16 @@ export type ControlStatus = {
   publicDeployment: boolean;
 };
 
+/** True when launchd/service reports the runtime up (incl. macOS "active"). */
+export function isServiceRunning(service: ServiceState | undefined): boolean {
+  if (!service) return false;
+  if (service.state === "running") return true;
+  if (service.state === "unknown") {
+    return /\b(active|running)\b/i.test(service.reason);
+  }
+  return false;
+}
+
 const POLL_MS = 4000;
 
 export function useControlStatus() {
@@ -79,7 +89,7 @@ export function useSharing() {
   const selfNode: NodeSummary | null =
     mesh.nodes.find((n) => n.isSelf) ?? null;
   const meshConnected = selfNode !== null;
-  const running = control?.service.state === "running" || meshConnected;
+  const running = isServiceRunning(control?.service) || meshConnected;
   const publicDeployment = control?.publicDeployment ?? false;
 
   const state: SharingState = publicDeployment

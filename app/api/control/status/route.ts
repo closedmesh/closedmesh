@@ -26,13 +26,25 @@ function parseStatus(out: string): Status["service"] {
 
   // `senda service status` writes one of:
   //   "Senda service: running (pid 12345)"
+  //   "Senda service: active (pid 12345)"  — launchctl state on some macOS
   //   "Senda service: stopped"
+  //   "Senda service: not loaded" / "not registered"
   //   "Senda service: unknown — <reason>"
-  if (lower.includes("running")) {
+  // Treat launchd "active" the same as "running" — otherwise the desktop
+  // chat empty-state screams "Couldn't join the mesh" while the service is up.
+  if (
+    /\b(running|active)\b/.test(lower) &&
+    !/\b(inactive|not active)\b/.test(lower)
+  ) {
     const m = txt.match(/pid\s+(\d+)/i);
     return { state: "running", pid: m ? Number(m[1]) : null };
   }
-  if (lower.includes("stopped") || lower.includes("not loaded")) {
+  if (
+    lower.includes("stopped") ||
+    lower.includes("not loaded") ||
+    lower.includes("not registered") ||
+    lower.includes("not installed")
+  ) {
     return { state: "stopped" };
   }
   return { state: "unknown", reason: txt };

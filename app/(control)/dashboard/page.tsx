@@ -24,6 +24,7 @@ import {
   sendDiagnostics,
   type DiagnosticContext,
 } from "../../lib/diagnostics-client";
+import { isServiceRunning } from "../../lib/use-control-status";
 
 type ServiceState =
   | { state: "running"; pid: number | null }
@@ -473,10 +474,10 @@ export default function DashboardPage() {
       phase: "runtime_upgrade_failed",
       serviceState: control?.service.state ?? null,
       runtimeReachable:
-        control?.service.state === "running" ||
+        isServiceRunning(control?.service) ||
         mesh.nodes.some((n) => n.isSelf),
     });
-  }, [runtimeUpgrade, control?.service.state, mesh.nodes]);
+  }, [runtimeUpgrade, control?.service, mesh.nodes]);
 
   // Crash sentinel: poll the local stderr scanner on a slow cadence and
   // auto-send one report per distinct crash signature — the "we get
@@ -496,7 +497,7 @@ export default function DashboardPage() {
     loadedModels: crashSelf?.capability.loadedModels ?? [],
     serviceState: control?.service.state ?? null,
     runtimeReachable:
-      control?.service.state === "running" ||
+      isServiceRunning(control?.service) ||
       mesh.nodes.some((n) => n.isSelf),
   };
   useEffect(() => {
@@ -805,7 +806,7 @@ export default function DashboardPage() {
   // even when sharing is already active, and clicking it can trigger
   // launchctl bootstrap → kill the running process.
   const meshConnected = selfNode !== null;
-  const running = control?.service.state === "running" || meshConnected;
+  const running = isServiceRunning(control?.service) || meshConnected;
   const stopped = control?.service.state === "stopped" && !meshConnected;
 
   const selfVram = selfNode?.capability.vramGb ?? selfNode?.vramGb ?? 0;
