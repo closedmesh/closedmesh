@@ -2838,7 +2838,16 @@ function EarningsPreviewCard({
         proveJson.bindUrl ||
         `https://senda.network/peer-bind?c=${encodeURIComponent(chal.challengeId)}`;
       setBindStatus("Opening browser to finish with Phantom…");
-      window.open(url, "_blank", "noreferrer");
+      // Desktop webview: wry ignores window.open. Same path as Public mesh
+      // /status — <a target="_blank"> is rewritten to a top-level nav that
+      // Tauri intercepts and hands to the OS browser.
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     } catch (err) {
       setBindStatus(err instanceof Error ? err.message : "Bind failed");
     } finally {
