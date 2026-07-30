@@ -2700,17 +2700,18 @@ function EarningsPreviewCard({
   const [bindStatus, setBindStatus] = useState<string | null>(null);
   const [payoutBusy, setPayoutBusy] = useState(false);
 
-  useEffect(() => {
-    const peerId = self.id?.trim();
-    if (!peerId) {
-      setLedger({ phase: "unavailable" });
-      setPeerUsd({ phase: "unavailable" });
-      return;
-    }
-    let cancelled = false;
-    setLedger({ phase: "loading" });
-    setPeerUsd({ phase: "loading" });
-    void (async () => {
+  const refreshEarnings = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const peerId = self.id?.trim();
+      if (!peerId) {
+        setLedger({ phase: "unavailable" });
+        setPeerUsd({ phase: "unavailable" });
+        return;
+      }
+      if (!opts?.silent) {
+        setLedger({ phase: "loading" });
+        setPeerUsd({ phase: "loading" });
+      }
       try {
         // Sidecar proxies to senda.network — local Next has no Upstash.
         const res = await fetch(
@@ -2722,17 +2723,14 @@ function EarningsPreviewCard({
           storeReady?: boolean;
           peer?: { credits?: number } | null;
         };
-        if (cancelled) return;
         setLedger({
           phase: "ready",
           storeReady: Boolean(json.storeReady),
           credits: Number(json.peer?.credits ?? 0) || 0,
         });
       } catch {
-        if (!cancelled) setLedger({ phase: "unavailable" });
+        if (!opts?.silent) setLedger({ phase: "unavailable" });
       }
-    })();
-    void (async () => {
       try {
         const res = await fetch(
           `/api/control/peer-earnings?peerId=${encodeURIComponent(peerId)}`,
@@ -2745,7 +2743,6 @@ function EarningsPreviewCard({
           min_withdraw_usd?: number;
           self_serve?: boolean;
         };
-        if (cancelled) return;
         setPeerUsd({
           phase: "ready",
           balanceUsd:
@@ -2755,13 +2752,39 @@ function EarningsPreviewCard({
           selfServe: Boolean(json.self_serve),
         });
       } catch {
-        if (!cancelled) setPeerUsd({ phase: "unavailable" });
+        if (!opts?.silent) setPeerUsd({ phase: "unavailable" });
       }
-    })();
-    return () => {
-      cancelled = true;
+    },
+    [self.id],
+  );
+
+  useEffect(() => {
+    void refreshEarnings();
+  }, [refreshEarnings]);
+
+  // After Phantom bind in the browser, the user returns here — refetch on
+  // focus/visibility and every 20s so Peer USD picks up the new wallet
+  // without a full app restart.
+  useEffect(() => {
+    const onFocus = () => {
+      void refreshEarnings({ silent: true });
     };
-  }, [self.id]);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refreshEarnings({ silent: true });
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    const tick = setInterval(() => {
+      void refreshEarnings({ silent: true });
+    }, 20_000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      clearInterval(tick);
+    };
+  }, [refreshEarnings]);
 
   const ledgerCredits =
     ledger.phase === "ready" && ledger.storeReady ? ledger.credits : null;

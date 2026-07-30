@@ -23,6 +23,16 @@ const MENU_QUIT: &str = "quit";
 
 const MAIN_WINDOW: &str = "main";
 
+/// Bring the control window forward — used by tray "Open", single-instance
+/// second launches, and `senda://` deep links from the browser after bind.
+fn focus_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// Shared state held by the tray builder and the polling task. We keep the
 /// last status under a `Mutex` so the menu rebuild on each poll can read
 /// "are we online?" without re-fetching.
@@ -97,14 +107,31 @@ fn main() {
         //
         // Registered before `setup`/window-builder so the callback can
         // resolve the main window through `app.get_webview_window`.
+        // Deep-link feature: Windows/Linux `senda://…` opens arrive here as
+        // argv on a second process; plugin forwards into the live instance.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            focus_main_window(app);
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .setup(move |app| {
+            // Custom scheme `senda://` (see tauri.conf.json plugins.deep-link).
+            // macOS registers at bundle time via Info.plist; Windows/Linux
+            // also need a runtime register so the installed binary owns the
+            // handler after first launch.
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(e) = app.deep_link().register_all() {
+                    eprintln!("[senda] deep-link register_all failed: {e}");
+                }
+            }
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                let _ = app.deep_link().on_open_url(move |_event| {
+                    focus_main_window(&handle);
+                });
+            }
             // Wipe the WKWebView cache on first launch of a new version.
             // Each release rebuilds the Next.js controller and produces
             // new chunk hashes; cached HTML from the previous version

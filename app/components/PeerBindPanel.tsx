@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
+/** Opens the installed Senda desktop app (macOS / Windows / Linux). */
+const SENDA_APP_DEEPLINK = "senda://dashboard";
+
 type PhantomProvider = {
   isPhantom?: boolean;
   publicKey?: { toBase58(): string };
@@ -110,37 +113,19 @@ export function PeerBindPanel() {
     void refresh();
   }, [refresh]);
 
-  const connect = async () => {
+  const attach = async () => {
+    if (!challengeId || !peerId) return;
     const phantom = getPhantom();
     if (!phantom) {
       setStatus("Install Phantom (or another Solana wallet) to continue.");
       return;
     }
-    try {
-      const res = await phantom.connect();
-      setWallet(res.publicKey.toBase58());
-      setStatus(null);
-    } catch {
-      setStatus("Wallet connect cancelled");
-    }
-  };
-
-  const attach = async () => {
-    if (!challengeId || !peerId) return;
-    const phantom = getPhantom();
-    if (!phantom) {
-      setStatus("Wallet not available");
-      return;
-    }
     setBusy(true);
     setStatus(null);
     try {
-      let w = wallet;
-      if (!w) {
-        const res = await phantom.connect();
-        w = res.publicKey.toBase58();
-        setWallet(w);
-      }
+      const connected = await phantom.connect();
+      const w = connected.publicKey.toBase58();
+      setWallet(w);
       const timestampMs = Date.now();
       const message = `Senda peer payout wallet\nPeer: ${peerId}\nWallet: ${w}\nTs: ${timestampMs}`;
       const signed = await phantom.signMessage(
@@ -202,28 +187,34 @@ export function PeerBindPanel() {
       )}
 
       {phase === "ready" && (
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => void connect()}
-            className="rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2 text-[13px] font-medium text-[var(--fg)]"
-          >
-            {wallet ? "Reconnect" : "Connect Phantom"}
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void attach()}
-            className="rounded-lg bg-[var(--accent)] px-3 py-2 text-[13px] font-medium text-white disabled:opacity-50"
-          >
-            {busy ? "Signing…" : "Bind payout wallet"}
-          </button>
-        </div>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void attach()}
+          className="rounded-lg bg-[var(--accent)] px-3 py-2 text-[13px] font-medium text-white disabled:opacity-50"
+        >
+          {busy ? "Signing…" : "Bind with Phantom"}
+        </button>
       )}
 
       {wallet && phase !== "done" && (
         <div className="break-all font-mono text-[11px] text-[var(--fg-muted)]">
           {wallet}
+        </div>
+      )}
+
+      {phase === "done" && (
+        <div className="space-y-2">
+          <a
+            href={SENDA_APP_DEEPLINK}
+            className="inline-flex rounded-lg bg-[var(--accent)] px-3 py-2 text-[13px] font-medium text-white"
+          >
+            Open Senda app
+          </a>
+          <p className="text-[12px] text-[var(--fg-muted)]">
+            Requires Senda desktop 0.1.127+. If nothing opens, switch back to the
+            app — Peer USD refreshes on its own.
+          </p>
         </div>
       )}
 

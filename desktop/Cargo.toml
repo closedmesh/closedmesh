@@ -1,6 +1,6 @@
 [package]
 name = "senda-desktop"
-version = "0.1.126"
+version = "0.1.127"
 edition = "2021"
 description = "Cross-platform desktop shell for Senda — an open peer-to-peer mesh of contributed compute serving open-weight models."
 license = "MIT OR Apache-2.0"
@@ -30,8 +30,12 @@ serde_json = "1"
 # the Start Menu shortcut, and any user double-click compound: 0.1.60 users
 # reported "the app keeps opening windows non stop until the computer crashes".
 # This plugin makes a second invocation focus the live window and exit.
+# `deep-link` feature: on Windows/Linux a senda:// open spawns a second
+# process; single-instance forwards that URL into the live process so we
+# don't get a second window (same crash class as the WiX double-launch).
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
-tauri-plugin-single-instance = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-deep-link = "2"
 
 # Lightweight blocking HTTP for status polling AND for the runtime
 # auto-upgrade thread (which fetches https://github.com/.../releases/latest).
