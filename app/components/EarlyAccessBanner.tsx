@@ -16,11 +16,14 @@ export function EarlyAccessBanner() {
         Paid API preview
       </Link>
       {" · "}
+      <Link href="/earn" className="text-[var(--accent)] hover:underline">
+        Earner dashboard
+      </Link>
+      {" · "}
       <Link href="/contribute" className="text-[var(--accent)] hover:underline">
         Contributor credits
       </Link>{" "}
-      tracked; peer USD may accrue on paid serves (bind wallet in desktop to
-      self-serve). Free chat stays free.{" "}
+      tracked; peer USD may accrue on paid serves. Free chat stays free.{" "}
       <Link href="/security" className="text-[var(--accent)] hover:underline">
         Security →
       </Link>

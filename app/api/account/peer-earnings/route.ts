@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  ensureWalletPeerIndex,
   getPeerPayoutWallet,
   getPeerUsdBalance,
   newPeerPayoutId,
@@ -31,6 +32,10 @@ export async function GET(req: Request) {
   }
   const balance = await getPeerUsdBalance(peerId);
   const wallet = await getPeerPayoutWallet(peerId);
+  if (wallet) {
+    // Backfill wallet→peer index for binds that predated /earn sign-in.
+    await ensureWalletPeerIndex(peerId, wallet);
+  }
   const selfServe = peerSelfServePayoutsEnabled();
   return NextResponse.json({
     peerId: shortPeerId(peerId),

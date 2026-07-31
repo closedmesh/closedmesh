@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  getPeerIdForWallet,
   getPeerUsdBalance,
   peerUsdForCompletion,
   recordPeerUsdEarnings,
@@ -56,6 +57,27 @@ describe("recordPeerUsdEarnings", () => {
     expect(a).toBe(usdToMicros(0.3));
     expect(b).toBe(0);
     await expect(getPeerUsdBalance(peerId)).resolves.toBe(usdToMicros(0.3));
+  });
+});
+
+describe("wallet → peer reverse index", () => {
+  it("resolves peer id from payout wallet after bind", async () => {
+    const wallet = "So11111111111111111111111111111111111111112";
+    await setPeerPayoutWallet("peerWALLET1", wallet);
+    await expect(getPeerIdForWallet(wallet)).resolves.toBe(
+      "peerWALLET1".slice(0, 10),
+    );
+  });
+
+  it("moves reverse index on rebind", async () => {
+    const a = "So11111111111111111111111111111111111111112";
+    const b = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+    await setPeerPayoutWallet("peerREBIND1", a);
+    await setPeerPayoutWallet("peerREBIND1", b);
+    await expect(getPeerIdForWallet(a)).resolves.toBeNull();
+    await expect(getPeerIdForWallet(b)).resolves.toBe(
+      "peerREBIND1".slice(0, 10),
+    );
   });
 });
 

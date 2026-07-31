@@ -20,6 +20,8 @@ import { sendUsdc } from "./solana-usdc-send";
 
 const BALANCE_PREFIX = "senda:peer:usd:balance";
 const WALLET_PREFIX = "senda:peer:payout-wallet";
+/** Reverse index: Solana wallet → short peer id (for /earn Phantom sign-in). */
+const WALLET_PEER_PREFIX = "senda:peer:wallet-peer";
 const PENDING_ZSET = "senda:peer:payout:pending";
 const PAYOUT_PREFIX = "senda:peer:payout";
 const PAYOUT_STATUS_PREFIX = "senda:peer:payout:status";
@@ -28,6 +30,8 @@ const ACCRUE_REQ_PREFIX = "senda:peer:usd:req";
 type MemoryStore = {
   balances: Map<string, number>;
   wallets: Map<string, string>;
+  /** wallet → peerId */
+  walletPeers: Map<string, string>;
   pending: Map<string, PeerPayoutRequest>;
   accruedReqs: Set<string>;
 };
@@ -35,6 +39,7 @@ type MemoryStore = {
 const memory: MemoryStore = {
   balances: new Map(),
   wallets: new Map(),
+  walletPeers: new Map(),
   pending: new Map(),
   accruedReqs: new Set(),
 };
@@ -54,6 +59,7 @@ export function peerEarningsStoreReady(): boolean {
 export function resetPeerEarningsMemory(): void {
   memory.balances.clear();
   memory.wallets.clear();
+  memory.walletPeers.clear();
   memory.pending.clear();
   memory.accruedReqs.clear();
 }
@@ -145,17 +151,28 @@ export async function setPeerPayoutWallet(
   const id = shortPeerId(peerId);
   const w = wallet.trim();
   if (!id || !w || w.length < 32) return { ok: false, error: "invalid_input" };
+  const prev = await getPeerPayoutWallet(id);
   const redis = getRedis();
   if (redis) {
     try {
       await redis.set(`${WALLET_PREFIX}:${id}`, w);
+      await redis.set(`${WALLET_PEER_PREFIX}:${w}`, id);
+      if (prev && prev !== w) {
+        try {
+          await redis.del(`${WALLET_PEER_PREFIX}:${prev}`);
+        } catch {
+          /* best-effort */
+        }
+      }
       return { ok: true };
     } catch {
       return { ok: false, error: "redis_error" };
     }
   }
   if (!useMemory()) return { ok: false, error: "store_unavailable" };
+  if (prev && prev !== w) memory.walletPeers.delete(prev);
   memory.wallets.set(id, w);
+  memory.walletPeers.set(w, id);
   return { ok: true };
 }
 
@@ -174,6 +191,51 @@ export async function getPeerPayoutWallet(
     }
   }
   return memory.wallets.get(id) ?? null;
+}
+
+/**
+ * Resolve the short peer id bound to a Solana payout wallet.
+ * Written on bind; also backfilled by {@link ensureWalletPeerIndex}.
+ */
+export async function getPeerIdForWallet(
+  wallet: string,
+): Promise<string | null> {
+  const w = wallet.trim();
+  if (!w || w.length < 32) return null;
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const id = await redis.get<string | null>(`${WALLET_PEER_PREFIX}:${w}`);
+      return id?.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+  if (!useMemory()) return null;
+  return memory.walletPeers.get(w) ?? null;
+}
+
+/**
+ * Ensure wallet → peer reverse index exists (backfill for binds that
+ * predated the index). Safe to call on every peer-earnings read.
+ */
+export async function ensureWalletPeerIndex(
+  peerId: string,
+  wallet: string,
+): Promise<void> {
+  const id = shortPeerId(peerId);
+  const w = wallet.trim();
+  if (!id || !w || w.length < 32) return;
+  const redis = getRedis();
+  if (redis) {
+    try {
+      await redis.set(`${WALLET_PEER_PREFIX}:${w}`, id);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  if (useMemory()) memory.walletPeers.set(w, id);
 }
 
 export type PeerPayoutStatus =

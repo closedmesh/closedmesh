@@ -61,6 +61,14 @@ export function peerPayoutRequestMessage(
   return `Senda peer payout request\nPeer: ${peerId}\nWallet: ${wallet}\nTs: ${timestampMs}`;
 }
 
+/** Phantom sign-in for the public earner dashboard (/earn). */
+export function earnerDashboardMessage(
+  wallet: string,
+  timestampMs: number,
+): string {
+  return `Senda earner dashboard\nWallet: ${wallet}\nTs: ${timestampMs}`;
+}
+
 /** Node-key proof that this challenge belongs to this peer (step 1). */
 export function peerBindProveMessage(input: {
   challengeId: string;
