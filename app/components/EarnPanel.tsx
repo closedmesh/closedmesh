@@ -238,72 +238,63 @@ export function EarnPanel() {
           )}
         </div>
 
-        <div className="relative shrink-0" ref={menuRef}>
-          {signedIn && wallet ? (
-            <>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => setMenuOpen((o) => !o)}
-                aria-expanded={menuOpen}
-                aria-haspopup="menu"
-                className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-1.5 text-[12px] font-medium text-[var(--fg)] transition hover:border-[var(--accent)]/40 disabled:opacity-50"
-              >
-                <span
-                  aria-hidden
-                  className="h-2 w-2 rounded-full bg-[var(--accent)]"
-                />
-                <span className="font-mono">{shortWallet(wallet)}</span>
-                <span aria-hidden className="text-[var(--fg-muted)]">
-                  ▾
-                </span>
-              </button>
-              {menuOpen ? (
-                <div
-                  role="menu"
-                  className="absolute right-0 z-10 mt-2 w-44 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] py-1 shadow-lg"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={busy}
-                    onClick={() => void load(wallet)}
-                    className="block w-full px-3 py-2 text-left text-[13px] text-[var(--fg)] hover:bg-[var(--bg-elev-2)] disabled:opacity-50"
-                  >
-                    {busy ? "Signing…" : "Refresh"}
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={signOut}
-                    className="block w-full px-3 py-2 text-left text-[13px] text-[var(--fg-muted)] hover:bg-[var(--bg-elev-2)] hover:text-[var(--fg)]"
-                  >
-                    Sign out
-                  </button>
-                </div>
-              ) : null}
-            </>
-          ) : (
+        {/* Signed-in only: compact account menu. Connect lives in the card below. */}
+        {signedIn && wallet ? (
+          <div className="relative shrink-0" ref={menuRef}>
             <button
               type="button"
               disabled={busy}
-              onClick={() => void connect()}
-              className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-[12px] font-semibold text-black disabled:opacity-50"
+              onClick={() => setMenuOpen((o) => !o)}
+              aria-expanded={menuOpen}
+              aria-haspopup="menu"
+              className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-1.5 text-[12px] font-medium text-[var(--fg)] transition hover:border-[var(--accent)]/40 disabled:opacity-50"
             >
-              {busy ? "Signing…" : "Connect Phantom"}
+              <span
+                aria-hidden
+                className="h-2 w-2 rounded-full bg-[var(--accent)]"
+              />
+              <span className="font-mono">{shortWallet(wallet)}</span>
+              <span aria-hidden className="text-[var(--fg-muted)]">
+                ▾
+              </span>
             </button>
-          )}
-        </div>
+            {menuOpen ? (
+              <div
+                role="menu"
+                className="absolute right-0 z-10 mt-2 w-44 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] py-1 shadow-lg"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={busy}
+                  onClick={() => void load(wallet)}
+                  className="block w-full px-3 py-2 text-left text-[13px] text-[var(--fg)] hover:bg-[var(--bg-elev-2)] disabled:opacity-50"
+                >
+                  {busy ? "Signing…" : "Refresh"}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={signOut}
+                  className="block w-full px-3 py-2 text-left text-[13px] text-[var(--fg-muted)] hover:bg-[var(--bg-elev-2)] hover:text-[var(--fg)]"
+                >
+                  Sign out
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </header>
 
       {!signedIn ? (
         <section className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-5 py-5">
           <h2 className="text-lg font-semibold tracking-tight">
-            Sign in with Phantom
+            Connect wallet
           </h2>
           <p className="text-[14px] leading-relaxed text-[var(--fg-muted)]">
-            Use the same wallet you bound as the peer payout address. We never
-            store a session — each refresh asks for a short signature.
+            Use the same Solana wallet you bound as the peer payout address
+            (Phantom or another wallet). We never store a session — each refresh
+            asks for a short signature.
           </p>
           <button
             type="button"
@@ -311,7 +302,7 @@ export function EarnPanel() {
             onClick={() => void connect()}
             className="rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-black disabled:opacity-50"
           >
-            {busy ? "Signing…" : "Connect Phantom"}
+            {busy ? "Signing…" : "Connect wallet"}
           </button>
         </section>
       ) : null}
