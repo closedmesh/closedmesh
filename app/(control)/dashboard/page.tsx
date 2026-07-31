@@ -3103,6 +3103,27 @@ function EarningsPreviewCard({
           )}
         </div>
       )}
+
+      <a
+        href={PUBLIC_EARN_URL}
+        target="_blank"
+        rel="noreferrer"
+        className="relative mt-4 flex items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-elev-2)] px-3 py-2.5 transition hover:border-[var(--accent)]/40 hover:bg-[var(--bg-elev)]"
+      >
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--fg-muted)]">
+            Earner dashboard
+          </div>
+          <div className="mt-0.5 text-[12px] text-[var(--fg)]">
+            {peerUsd.phase === "ready" && peerUsd.wallet
+              ? "Open senda.network/earn and sign with your bound Phantom wallet."
+              : "Credits and Peer USD on the web — bind a wallet here first, then sign in with Phantom."}
+          </div>
+        </div>
+        <span className="shrink-0 text-[12px] font-medium text-[var(--accent)]">
+          senda.network/earn →
+        </span>
+      </a>
     </section>
   );
 }
@@ -3125,6 +3146,7 @@ const SHARE_MESSAGE = `${SHARE_TEXT} ${SHARE_URL}`;
 // runtime-update banner already uses, so the desktop webview hands it to the
 // system browser instead of navigating away from the control panel.
 const PUBLIC_STATUS_URL = "https://senda.network/status";
+const PUBLIC_EARN_URL = "https://senda.network/earn";
 
 /**
  * Persistent link to the public status page from the "This machine" card.
