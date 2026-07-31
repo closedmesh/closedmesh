@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 type PhantomProvider = {
@@ -82,9 +82,14 @@ function formatTokenCount(n: number): string {
   return String(Math.round(n));
 }
 
+function shortWallet(w: string): string {
+  return `${w.slice(0, 4)}…${w.slice(-4)}`;
+}
+
 /**
  * Public earner dashboard: Phantom proves wallet ownership → load bound peer
- * credits + Peer USD. No long-lived session cookie — each load is signed.
+ * credits + Peer USD. Signed-in chrome is a compact top-right user toggle;
+ * the educational sign-in block only shows when logged out.
  */
 export function EarnPanel() {
   const [wallet, setWallet] = useState<string | null>(null);
@@ -92,6 +97,26 @@ export function EarnPanel() {
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadedAt, setLoadedAt] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const signedIn = Boolean(wallet && data?.peerId);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
 
   const load = useCallback(async (w: string) => {
     const phantom = getPhantom();
@@ -127,6 +152,7 @@ export function EarnPanel() {
       setStatus(err instanceof Error ? err.message : "Load failed");
     } finally {
       setBusy(false);
+      setMenuOpen(false);
     }
   }, []);
 
@@ -147,66 +173,151 @@ export function EarnPanel() {
     }
   };
 
+  const signOut = () => {
+    setWallet(null);
+    setData(null);
+    setLoadedAt(null);
+    setStatus(null);
+    setMenuOpen(false);
+  };
+
   const models = data?.credits?.tokensByModel
     ? Object.entries(data.credits.tokensByModel).sort((a, b) => b[1] - a[1])
     : [];
 
   return (
-    <div className="space-y-8">
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold tracking-tight">
-          Sign in with Phantom
-        </h2>
-        <p className="text-[14px] leading-relaxed text-[var(--fg-muted)]">
-          Use the same wallet you bound as the peer payout address. We never
-          store a session — each refresh asks for a short signature.
-        </p>
-        <div className="flex flex-wrap items-center gap-3">
+    <div className="space-y-10">
+      {/* Page chrome: title left, user control right — same max-width as content */}
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 max-w-xl">
+          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
+            Earners
+          </div>
+          <h1 className="mt-3 text-balance text-3xl font-semibold leading-[1.1] tracking-tight sm:text-4xl">
+            Your node earnings
+          </h1>
+          {signedIn ? (
+            <p className="mt-3 text-[13px] text-[var(--fg-muted)]">
+              Peer{" "}
+              <span className="font-mono text-[var(--fg)]">{data!.peerId}</span>
+              {" · "}
+              <Link href="/status" className="text-[var(--accent)] underline">
+                /status
+              </Link>
+              {loadedAt ? (
+                <span className="text-[var(--fg-muted)]">
+                  {" · "}Updated {loadedAt}
+                </span>
+              ) : null}
+            </p>
+          ) : (
+            <>
+              <p className="mt-4 text-pretty text-[15px] leading-relaxed text-[var(--fg-muted)]">
+                Sign with the Phantom wallet you bound in the desktop app. We
+                show contributor credits, tokens served by model, and Peer USD
+                from paid{" "}
+                <code className="text-[var(--fg)]">/v1</code> mesh serves.
+              </p>
+              <p className="mt-3 text-[13px] text-[var(--fg-muted)]">
+                No bind yet?{" "}
+                <Link
+                  href="/contribute"
+                  className="text-[var(--accent)] underline"
+                >
+                  Run a node
+                </Link>
+                , then Peer USD → Bind wallet in Senda desktop.{" "}
+                <Link
+                  href="/peer-bind"
+                  className="text-[var(--accent)] underline"
+                >
+                  Bind help →
+                </Link>
+              </p>
+            </>
+          )}
+        </div>
+
+        <div className="relative shrink-0" ref={menuRef}>
+          {signedIn && wallet ? (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setMenuOpen((o) => !o)}
+                aria-expanded={menuOpen}
+                aria-haspopup="menu"
+                className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-1.5 text-[12px] font-medium text-[var(--fg)] transition hover:border-[var(--accent)]/40 disabled:opacity-50"
+              >
+                <span
+                  aria-hidden
+                  className="h-2 w-2 rounded-full bg-[var(--accent)]"
+                />
+                <span className="font-mono">{shortWallet(wallet)}</span>
+                <span aria-hidden className="text-[var(--fg-muted)]">
+                  ▾
+                </span>
+              </button>
+              {menuOpen ? (
+                <div
+                  role="menu"
+                  className="absolute right-0 z-10 mt-2 w-44 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] py-1 shadow-lg"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={busy}
+                    onClick={() => void load(wallet)}
+                    className="block w-full px-3 py-2 text-left text-[13px] text-[var(--fg)] hover:bg-[var(--bg-elev-2)] disabled:opacity-50"
+                  >
+                    {busy ? "Signing…" : "Refresh"}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={signOut}
+                    className="block w-full px-3 py-2 text-left text-[13px] text-[var(--fg-muted)] hover:bg-[var(--bg-elev-2)] hover:text-[var(--fg)]"
+                  >
+                    Sign out
+                  </button>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void connect()}
+              className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-[12px] font-semibold text-black disabled:opacity-50"
+            >
+              {busy ? "Signing…" : "Connect Phantom"}
+            </button>
+          )}
+        </div>
+      </header>
+
+      {!signedIn ? (
+        <section className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-5 py-5">
+          <h2 className="text-lg font-semibold tracking-tight">
+            Sign in with Phantom
+          </h2>
+          <p className="text-[14px] leading-relaxed text-[var(--fg-muted)]">
+            Use the same wallet you bound as the peer payout address. We never
+            store a session — each refresh asks for a short signature.
+          </p>
           <button
             type="button"
             disabled={busy}
-            onClick={() => void (wallet ? load(wallet) : connect())}
+            onClick={() => void connect()}
             className="rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-black disabled:opacity-50"
           >
-            {busy
-              ? "Signing…"
-              : wallet
-                ? "Refresh"
-                : "Connect Phantom"}
+            {busy ? "Signing…" : "Connect Phantom"}
           </button>
-          {wallet ? (
-            <span className="font-mono text-[12px] text-[var(--fg-muted)]">
-              {wallet.slice(0, 4)}…{wallet.slice(-4)}
-            </span>
-          ) : null}
-          {loadedAt ? (
-            <span className="text-[12px] text-[var(--fg-muted)]">
-              Updated {loadedAt}
-            </span>
-          ) : null}
-        </div>
-      </section>
+        </section>
+      ) : null}
 
-      {data?.peerId ? (
+      {signedIn && data ? (
         <>
-          <section className="space-y-1">
-            <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--fg-muted)]">
-              Bound peer
-            </div>
-            <div className="font-mono text-[15px] text-[var(--fg)]">
-              {data.peerId}
-            </div>
-            <p className="text-[12px] text-[var(--fg-muted)]">
-              Live mesh presence:{" "}
-              <Link
-                href="/status"
-                className="text-[var(--accent)] underline"
-              >
-                /status
-              </Link>
-            </p>
-          </section>
-
           <section className="grid gap-4 sm:grid-cols-2">
             <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-4">
               <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--fg-muted)]">
