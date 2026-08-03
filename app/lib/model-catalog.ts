@@ -152,6 +152,16 @@ export const MODEL_CATALOG: CatalogModel[] = [
     vision: true,
   },
   {
+    id: "Qwen3.6-27B-Q4_K_M",
+    name: "Qwen 3.6 · 27B Vision",
+    family: "qwen",
+    sizeGb: 15.7,
+    minVramGb: 20,
+    description:
+      "Qwen 3.6 dense 27B — vision and text, with a coding-focused upgrade over 3.5. Fits a 24 GB GPU or a 28 GB+ Mac, or pools across two mid-range contributors.",
+    vision: true,
+  },
+  {
     id: "Qwen3-32B-Q4_K_M",
     name: "Qwen 3 · 32B",
     family: "qwen",
@@ -161,6 +171,16 @@ export const MODEL_CATALOG: CatalogModel[] = [
       "Largest dense Qwen 3 — the dense quality ceiling in this size class. Fits a 24 GB GPU or a 36 GB+ Mac (a 32 GB Mac is right at the Metal-budget line and may not load at long context). Also pools across two mid-range contributors.",
   },
   {
+    id: "Qwen3.6-35B-A3B-Q4_K_M",
+    name: "Qwen 3.6 · 35B A3B (MoE) Vision",
+    family: "qwen",
+    sizeGb: 20.6,
+    minVramGb: 24,
+    description:
+      "Qwen 3.6 mixture-of-experts: 35B total, ~3B active per token, vision and text. 256 experts, top-8. Near-30B quality at MoE speed — fits a 24 GB GPU or a 36 GB+ Mac, or expert-shards across two contributors.",
+    vision: true,
+  },
+  {
     id: "Qwen3-235B-A22B-Q4_K_M",
     name: "Qwen 3 · 235B (A22B MoE)",
     family: "qwen",
@@ -168,6 +188,26 @@ export const MODEL_CATALOG: CatalogModel[] = [
     minVramGb: 144,
     description:
       "Frontier-class mixture-of-experts: 235B params, ~22B active per token. Won't fit on any single laptop — this is the model that demonstrates what the mesh is for.",
+  },
+  {
+    id: "Qwen3.5-122B-A10B-Q4_K_M",
+    name: "Qwen 3.5 · 122B A10B (MoE) Vision",
+    family: "qwen",
+    sizeGb: 71,
+    minVramGb: 80,
+    description:
+      "Large Qwen 3.5 MoE: 122B total, ~10B active, vision and text. 256 experts, top-8. Needs a workstation-class peer (~80 GB usable) or a multi-node mesh pool.",
+    vision: true,
+  },
+  {
+    id: "Qwen3.5-397B-A17B-Q4_K_M",
+    name: "Qwen 3.5 · 397B A17B (MoE) Vision",
+    family: "qwen",
+    sizeGb: 227,
+    minVramGb: 240,
+    description:
+      "Largest open Qwen 3.5 MoE: 397B total, ~17B active, vision and text. 512 experts, top-10. Mesh-scale only — multi-node expert sharding across high-VRAM contributors.",
+    vision: true,
   },
 ];
 

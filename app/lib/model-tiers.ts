@@ -108,18 +108,22 @@ const TIER_BY_MODEL: Record<string, ModelTier> = {
   // surfaces "proof-of-capacity, not chat default" copy on the row.
   // The DeepSeek-70B served 2026-05-23 at ~1.0 tok/s lives here.
   "Gemma-3-27B-it-Q4_K_M": "capacity",
+  "Qwen3.6-27B-Q4_K_M": "capacity",
   "Qwen3-30B-A3B-Q4_K_M": "capacity",
   "GLM-4.7-Flash-Q4_K_M": "capacity",
   "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M": "capacity",
   "GLM-4-32B-0414-Q4_K_M": "capacity",
   "Qwen3-32B-Q4_K_M": "capacity",
+  "Qwen3.6-35B-A3B-Q4_K_M": "capacity",
   "Qwen2.5-Coder-32B-Instruct-Q4_K_M": "capacity",
   "Llama-3.3-70B-Instruct-Q4_K_M": "capacity",
   "DeepSeek-R1-Distill-70B-Q4_K_M": "capacity",
   "Qwen2.5-72B-Instruct-Q4_K_M": "capacity",
   "Qwen3-Coder-Next-Q4_K_M": "capacity",
   "Mixtral-8x22B-Instruct-Q4_K_M": "capacity",
+  "Qwen3.5-122B-A10B-Q4_K_M": "capacity",
   "Qwen3-235B-A22B-Q4_K_M": "capacity",
+  "Qwen3.5-397B-A17B-Q4_K_M": "capacity",
 
   // Smoke-test only; not a chat-default candidate even though it's
   // tiny. Useful for proving the runtime is alive end-to-end.
