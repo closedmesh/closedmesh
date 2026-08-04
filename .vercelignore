@@ -2,4 +2,14 @@ desktop
 internal
 evals
 terminals
+.agency
+.anchor
+target
+programs
+tests
+test-ledger
 *.log
+Cargo.toml
+Cargo.lock
+Anchor.toml
+tsconfig.anchor.json
