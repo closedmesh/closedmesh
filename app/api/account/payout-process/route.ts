@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
+import { processPendingRefunds } from "../../../lib/customer-refunds";
 import { processPendingPeerPayouts } from "../../../lib/peer-earnings";
 import {
   peerPayoutDryRun,
   peerPayoutsAutoEnabled,
+  refundsAutoEnabled,
   solanaPayoutsConfigured,
 } from "../../../lib/solana-config";
 
@@ -16,30 +18,49 @@ function cronAuthorized(req: Request): boolean {
 /**
  * GET/POST /api/account/payout-process — Vercel cron (5.D-auto).
  *
- * Requires SENDA_PEER_PAYOUTS_AUTO=1. Honors SENDA_PAYOUT_DRY_RUN and spend caps.
- * Does not use force — ops use admin-payout action=process for manual runs.
+ * Peer payouts: SENDA_PEER_PAYOUTS_AUTO=1
+ * Customer refunds: SENDA_REFUNDS_AUTO=1
+ * Shared: SENDA_PAYOUT_DRY_RUN + spend caps.
  */
 async function handle(req: Request) {
   if (!cronAuthorized(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  if (!peerPayoutsAutoEnabled()) {
-    return NextResponse.json({
-      ok: true,
-      autoDisabled: true,
-      hint: "Set SENDA_PEER_PAYOUTS_AUTO=1 after caps + canary checklist",
-      payoutsConfigured: solanaPayoutsConfigured(),
-      dryRun: peerPayoutDryRun(),
-    });
-  }
+  const peerAuto = peerPayoutsAutoEnabled();
+  const refundAuto = refundsAutoEnabled();
+  const dryRunEnv = peerPayoutDryRun();
 
-  const result = await processPendingPeerPayouts(10);
+  const peers = peerAuto
+    ? await processPendingPeerPayouts(10)
+    : {
+        autoDisabled: true as const,
+        processed: 0,
+        sent: 0,
+        failed: 0,
+        skipped: 0,
+        dryRun: 0,
+        wouldSend: [] as [],
+      };
+
+  const refunds = refundAuto
+    ? await processPendingRefunds(10)
+    : {
+        autoDisabled: true as const,
+        processed: 0,
+        sent: 0,
+        failed: 0,
+        skipped: 0,
+        dryRun: 0,
+        wouldSend: [] as [],
+      };
+
   return NextResponse.json({
     ok: true,
     payoutsConfigured: solanaPayoutsConfigured(),
-    dryRunEnv: peerPayoutDryRun(),
-    ...result,
+    dryRunEnv,
+    peers: { autoEnabled: peerAuto, ...peers },
+    refunds: { autoEnabled: refundAuto, ...refunds },
   });
 }
 

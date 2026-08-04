@@ -5,10 +5,15 @@ import {
   getRefund,
   listPendingRefunds,
   markRefundPaid,
+  processPendingRefunds,
 } from "../../../lib/customer-refunds";
 import { microsToUsd } from "../../../lib/rate-card";
 import { sendUsdc } from "../../../lib/solana-usdc-send";
-import { solanaPayoutsConfigured } from "../../../lib/solana-config";
+import {
+  peerPayoutDryRun,
+  refundsAutoEnabled,
+  solanaPayoutsConfigured,
+} from "../../../lib/solana-config";
 
 function cronAuthorized(req: Request): boolean {
   const secret = process.env.CRON_SECRET?.trim();
@@ -19,7 +24,7 @@ function cronAuthorized(req: Request): boolean {
 
 /**
  * GET /api/account/admin-refund — list pending refunds (ops).
- * POST — { action: "pay"|"cancel"|"send", id, txSignature? }
+ * POST — { action: "pay"|"cancel"|"send"|"process", id?, txSignature? }
  */
 export async function GET(req: Request) {
   if (!cronAuthorized(req)) {
@@ -28,6 +33,8 @@ export async function GET(req: Request) {
   const pending = await listPendingRefunds(50);
   return NextResponse.json({
     payoutsConfigured: solanaPayoutsConfigured(),
+    refundsAuto: refundsAutoEnabled(),
+    dryRun: peerPayoutDryRun(),
     pending: pending.map((r) => ({
       ...r,
       usd: microsToUsd(r.micros),
@@ -51,9 +58,18 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   }
 
-  const id = body.id?.trim() ?? "";
   const action = body.action?.trim() ?? "";
-  if (!id || !action) {
+  if (!action) {
+    return NextResponse.json({ error: "action_required" }, { status: 400 });
+  }
+
+  if (action === "process") {
+    const result = await processPendingRefunds(10, { force: true });
+    return NextResponse.json({ ok: true, ...result });
+  }
+
+  const id = body.id?.trim() ?? "";
+  if (!id) {
     return NextResponse.json({ error: "id_and_action_required" }, { status: 400 });
   }
 
@@ -115,7 +131,6 @@ export async function POST(req: Request) {
       amountAtomic: claimed.request.micros,
     });
     if (!sent.ok) {
-      // Leave status sending for ops reconcile; do not auto-retry blindly.
       return NextResponse.json(
         {
           error: sent.error,

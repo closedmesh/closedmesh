@@ -5,6 +5,7 @@ import {
   peerPayoutMaxPeerDailyMicros,
   peerPayoutMaxTicketMicros,
   peerPayoutsAutoEnabled,
+  refundsAutoEnabled,
   solanaRpcProvider,
   solanaRpcUrl,
   USDC_DECIMALS,
@@ -16,6 +17,7 @@ const KEYS = [
   "HELIUS_API_KEY",
   "SENDA_HELIUS_API_KEY",
   "SENDA_PEER_PAYOUTS_AUTO",
+  "SENDA_REFUNDS_AUTO",
   "SENDA_PAYOUT_DRY_RUN",
   "SENDA_PAYOUT_MAX_TICKET_USD",
   "SENDA_PAYOUT_MAX_PEER_DAILY_USD",
@@ -68,8 +70,10 @@ describe("solanaRpcUrl", () => {
 describe("5.D-auto payout controls", () => {
   it("defaults AUTO and dry-run off", () => {
     delete process.env.SENDA_PEER_PAYOUTS_AUTO;
+    delete process.env.SENDA_REFUNDS_AUTO;
     delete process.env.SENDA_PAYOUT_DRY_RUN;
     expect(peerPayoutsAutoEnabled()).toBe(false);
+    expect(refundsAutoEnabled()).toBe(false);
     expect(peerPayoutDryRun()).toBe(false);
   });
 

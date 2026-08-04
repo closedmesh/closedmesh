@@ -1,14 +1,28 @@
 /**
- * Customer API-balance refund requests (ops-assisted in preview).
+ * Customer API-balance refund requests.
  *
- * Atomic drain + ticket creation. Ops mark tickets paid after USDC return
- * (or cancel + restore). Liability keys do not expire.
+ * Atomic drain + ticket creation. 5.D-auto Slice C: processPendingRefunds
+ * under shared dry-run + spend caps (SENDA_REFUNDS_AUTO).
  */
 
 import { randomBytes } from "crypto";
 import { getRedis } from "./redis";
 import { adjustCustomerBalance, getCustomerBalance } from "./customer-ledger";
-import { MIN_WITHDRAW_USDC_ATOMIC } from "./solana-config";
+import {
+  addDailyPayoutSpend,
+  getDailyPayoutSpend,
+  payoutUtcDayKey,
+} from "./peer-earnings";
+import {
+  MIN_WITHDRAW_USDC_ATOMIC,
+  peerPayoutDryRun,
+  peerPayoutMaxGlobalDailyMicros,
+  peerPayoutMaxPeerDailyMicros,
+  peerPayoutMaxTicketMicros,
+  refundsAutoEnabled,
+  solanaPayoutsConfigured,
+} from "./solana-config";
+import { sendUsdc } from "./solana-usdc-send";
 
 const REFUND_PREFIX = "senda:refund";
 const REFUND_STATUS_PREFIX = "senda:refund:status";
@@ -16,7 +30,12 @@ const PENDING_ZSET = "senda:refund:pending";
 const BY_WALLET_PREFIX = "senda:refund:by-wallet";
 const BALANCE_PREFIX = "senda:cust:balance";
 
-export type RefundStatus = "pending" | "sending" | "paid" | "cancelled";
+export type RefundStatus =
+  | "pending"
+  | "sending"
+  | "paid"
+  | "cancelled"
+  | "failed";
 
 export type RefundRequest = {
   id: string;
@@ -262,7 +281,11 @@ async function saveRefund(request: RefundRequest): Promise<void> {
   if (redis) {
     await redis.set(`${REFUND_PREFIX}:${request.id}`, JSON.stringify(request));
     await redis.set(`${REFUND_STATUS_PREFIX}:${request.id}`, request.status);
-    if (request.status === "paid" || request.status === "cancelled") {
+    if (
+      request.status === "paid" ||
+      request.status === "cancelled" ||
+      request.status === "failed"
+    ) {
       await redis.zrem(PENDING_ZSET, request.id);
     }
     return;
@@ -357,4 +380,177 @@ export async function cancelRefund(input: {
 export async function sumPendingRefundMicros(): Promise<number> {
   const pending = await listPendingRefunds(500);
   return pending.reduce((s, r) => s + (r.micros || 0), 0);
+}
+
+export type ProcessRefundsOpts = {
+  /** Ops admin-refund process: bypass SENDA_REFUNDS_AUTO. */
+  force?: boolean;
+};
+
+export type ProcessRefundsResult = {
+  processed: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  dryRun: number;
+  autoDisabled: boolean;
+  wouldSend: Array<{
+    id: string;
+    wallet: string;
+    destination: string;
+    micros: number;
+  }>;
+};
+
+/**
+ * Auto-send pending customer refunds (shared dry-run + spend caps with peer payouts).
+ */
+export async function processPendingRefunds(
+  limit = 5,
+  opts: ProcessRefundsOpts = {},
+): Promise<ProcessRefundsResult> {
+  const wouldSend: ProcessRefundsResult["wouldSend"] = [];
+  const empty = (
+    extra: Partial<ProcessRefundsResult> = {},
+  ): ProcessRefundsResult => ({
+    processed: 0,
+    sent: 0,
+    failed: 0,
+    skipped: 0,
+    dryRun: 0,
+    autoDisabled: false,
+    wouldSend,
+    ...extra,
+  });
+
+  if (!opts.force && !refundsAutoEnabled()) {
+    return empty({ autoDisabled: true });
+  }
+
+  const dryRun = peerPayoutDryRun();
+  const maxTicket = peerPayoutMaxTicketMicros();
+  const maxPeerDay = peerPayoutMaxPeerDailyMicros();
+  const maxGlobalDay = peerPayoutMaxGlobalDailyMicros();
+  const day = payoutUtcDayKey();
+
+  const pending = await listPendingRefunds(limit);
+  let processed = 0;
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+  let dryRunCount = 0;
+  let globalSpent = await getDailyPayoutSpend(day);
+
+  for (const req of pending) {
+    if (req.status === "sending") {
+      skipped += 1;
+      continue;
+    }
+    if (!solanaPayoutsConfigured()) {
+      skipped += 1;
+      continue;
+    }
+    if (req.micros > maxTicket) {
+      const claimed = await claimRefundForSend(req.id);
+      if (!claimed.ok) {
+        skipped += 1;
+        continue;
+      }
+      processed += 1;
+      const restore = await adjustCustomerBalance({
+        accountId: req.wallet,
+        deltaMicros: req.micros,
+        reason: "refund_cancel",
+        ref: `cap:${req.id}`,
+      });
+      req.status = "failed";
+      req.note = `above_ticket_cap:${req.micros}>${maxTicket}`;
+      req.processedAt = new Date().toISOString();
+      await saveRefund(req);
+      if (!restore.ok) {
+        failed += 1;
+        continue;
+      }
+      failed += 1;
+      continue;
+    }
+
+    const destSpent = await getDailyPayoutSpend(`${day}:${req.destination}`);
+    if (
+      destSpent + req.micros > maxPeerDay ||
+      globalSpent + req.micros > maxGlobalDay
+    ) {
+      skipped += 1;
+      continue;
+    }
+
+    if (dryRun) {
+      dryRunCount += 1;
+      wouldSend.push({
+        id: req.id,
+        wallet: req.wallet,
+        destination: req.destination,
+        micros: req.micros,
+      });
+      skipped += 1;
+      continue;
+    }
+
+    const claimed = await claimRefundForSend(req.id);
+    if (!claimed.ok) {
+      skipped += 1;
+      continue;
+    }
+    if (claimed.request.txSignature) {
+      skipped += 1;
+      continue;
+    }
+    processed += 1;
+
+    const result = await sendUsdc({
+      destinationWallet: claimed.request.destination,
+      amountAtomic: claimed.request.micros,
+    });
+    if (result.ok) {
+      const paid = await markRefundPaid({
+        id: req.id,
+        txSignature: result.signature,
+      });
+      if (paid.ok) {
+        await addDailyPayoutSpend(day, req.micros);
+        await addDailyPayoutSpend(`${day}:${req.destination}`, req.micros);
+        globalSpent += req.micros;
+        sent += 1;
+      } else {
+        // On-chain sent — do not restore; leave for ops.
+        failed += 1;
+      }
+    } else {
+      const restore = await adjustCustomerBalance({
+        accountId: req.wallet,
+        deltaMicros: req.micros,
+        reason: "refund_cancel",
+        ref: `fail:${req.id}`,
+      });
+      req.status = "failed";
+      req.note = result.error;
+      req.processedAt = new Date().toISOString();
+      await saveRefund(req);
+      if (!restore.ok) {
+        failed += 1;
+        continue;
+      }
+      failed += 1;
+    }
+  }
+
+  return {
+    processed,
+    sent,
+    failed,
+    skipped,
+    dryRun: dryRunCount,
+    autoDisabled: false,
+    wouldSend,
+  };
 }

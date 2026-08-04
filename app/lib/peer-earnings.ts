@@ -270,7 +270,8 @@ export function payoutUtcDayKey(now = new Date()): string {
   return now.toISOString().slice(0, 10).replace(/-/g, "");
 }
 
-async function getSpentMicros(key: string): Promise<number> {
+/** Shared UTC-day spend counters (peer payouts + refunds). */
+export async function getDailyPayoutSpend(key: string): Promise<number> {
   const redis = getRedis();
   if (redis) {
     try {
@@ -286,7 +287,10 @@ async function getSpentMicros(key: string): Promise<number> {
   return memory.spent.get(key) ?? 0;
 }
 
-async function addSpentMicros(key: string, micros: number): Promise<void> {
+export async function addDailyPayoutSpend(
+  key: string,
+  micros: number,
+): Promise<void> {
   if (micros <= 0) return;
   const redis = getRedis();
   if (redis) {
@@ -765,7 +769,7 @@ export async function processPendingPeerPayouts(
   let skipped = 0;
   let dryRunCount = 0;
 
-  let globalSpent = await getSpentMicros(day);
+  let globalSpent = await getDailyPayoutSpend(day);
 
   for (const req of pending) {
     if (req.status === "sending") {
@@ -798,7 +802,7 @@ export async function processPendingPeerPayouts(
       continue;
     }
 
-    const peerSpent = await getSpentMicros(`${day}:${req.peerId}`);
+    const peerSpent = await getDailyPayoutSpend(`${day}:${req.peerId}`);
     if (
       peerSpent + req.micros > maxPeerDay ||
       globalSpent + req.micros > maxGlobalDay
@@ -837,8 +841,8 @@ export async function processPendingPeerPayouts(
       req.status = "sent";
       req.txSignature = result.signature;
       await updatePeerPayout(req);
-      await addSpentMicros(day, req.micros);
-      await addSpentMicros(`${day}:${req.peerId}`, req.micros);
+      await addDailyPayoutSpend(day, req.micros);
+      await addDailyPayoutSpend(`${day}:${req.peerId}`, req.micros);
       globalSpent += req.micros;
       sent += 1;
     } else {

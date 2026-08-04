@@ -101,6 +101,15 @@ export function peerPayoutsAutoEnabled(): boolean {
 }
 
 /**
+ * Customer refund auto-send (same dry-run + spend caps as peer payouts).
+ * Default OFF — set SENDA_REFUNDS_AUTO=1 after peer canary is proven.
+ */
+export function refundsAutoEnabled(): boolean {
+  const raw = process.env.SENDA_REFUNDS_AUTO?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on";
+}
+
+/**
  * When set, process path claims nothing and does not broadcast —
  * reports what would send (ops / cron dry-run).
  */
