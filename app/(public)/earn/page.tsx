@@ -10,20 +10,16 @@ export const metadata: Metadata = {
 };
 
 /**
- * /earn — Phantom-gated view of peer contribution + Peer USD.
+ * /earn — Phantom-gated peer earnings panel.
  * Requires a prior desktop wallet bind (peer ↔ Solana address).
- * Signed-in chrome (user toggle) lives inside EarnPanel, not the site header.
+ * Signed-in chrome lives inside EarnPanel.
  */
 export default function EarnPage() {
   return (
     <div className="min-h-dvh bg-[var(--bg)] text-[var(--fg)]">
       <PublicHeader variant="default" />
-      <main>
-        <section>
-          <div className="mx-auto max-w-3xl px-6 py-16 sm:py-20">
-            <EarnPanel />
-          </div>
-        </section>
+      <main className="mx-auto max-w-5xl px-6 py-10 sm:py-12">
+        <EarnPanel />
       </main>
       <PublicFooter />
     </div>

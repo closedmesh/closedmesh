@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 
 type PhantomProvider = {
@@ -88,10 +94,61 @@ function shortWallet(w: string): string {
   return `${w.slice(0, 4)}…${w.slice(-4)}`;
 }
 
+function StatCard({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-4">
+      <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--fg-muted)]">
+        {label}
+      </div>
+      <div className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-[var(--fg)]">
+        {value}
+      </div>
+      {hint ? (
+        <div className="mt-1 text-[11px] leading-relaxed text-[var(--fg-muted)]">
+          {hint}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Panel({
+  title,
+  meta,
+  children,
+}: {
+  title: string;
+  meta?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-4">
+      <div className="mb-3 flex items-baseline justify-between gap-2">
+        <h2 className="text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
+          {title}
+        </h2>
+        {meta ? (
+          <span className="text-[10px] uppercase tracking-[0.14em] text-[var(--fg-muted)]">
+            {meta}
+          </span>
+        ) : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
 /**
  * Public earner dashboard: Phantom proves wallet ownership → load bound peer
- * credits + Peer USD. Signed-in chrome is a compact top-right user toggle;
- * the educational sign-in block only shows when logged out.
+ * credits + Peer USD. Signed-in chrome is a compact account menu.
  */
 export function EarnPanel() {
   const [wallet, setWallet] = useState<string | null>(null);
@@ -187,60 +244,56 @@ export function EarnPanel() {
     ? Object.entries(data.credits.tokensByModel).sort((a, b) => b[1] - a[1])
     : [];
 
+  const history =
+    data?.payoutHistory?.length
+      ? data.payoutHistory
+      : data?.pendingPayouts ?? [];
+
   return (
-    <div className="space-y-10">
-      {/* Page chrome: title left, user control right — same max-width as content */}
+    <div className="space-y-8">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 max-w-xl">
           <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
-            Earners
+            Earner dashboard
           </div>
-          <h1 className="mt-3 text-balance text-3xl font-semibold leading-[1.1] tracking-tight sm:text-4xl">
-            Your node earnings
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
+            Node earnings
           </h1>
           {signedIn ? (
-            <p className="mt-3 text-[13px] text-[var(--fg-muted)]">
+            <p className="mt-2 text-[13px] text-[var(--fg-muted)]">
               Peer{" "}
               <span className="font-mono text-[var(--fg)]">{data!.peerId}</span>
               {" · "}
-              <Link href="/status" className="text-[var(--accent)] underline">
+              <Link href="/status" className="text-[var(--accent)] hover:underline">
                 /status
               </Link>
               {loadedAt ? (
-                <span className="text-[var(--fg-muted)]">
+                <span>
                   {" · "}Updated {loadedAt}
                 </span>
               ) : null}
             </p>
           ) : (
-            <>
-              <p className="mt-4 text-pretty text-[15px] leading-relaxed text-[var(--fg-muted)]">
-                Sign with the Phantom wallet you bound in the desktop app. We
-                show contributor credits, tokens served by model, and Peer USD
-                from paid{" "}
-                <code className="text-[var(--fg)]">/v1</code> mesh serves.
-              </p>
-              <p className="mt-3 text-[13px] text-[var(--fg-muted)]">
-                No bind yet?{" "}
-                <Link
-                  href="/contribute"
-                  className="text-[var(--accent)] underline"
-                >
-                  Run a node
-                </Link>
-                , then Peer USD → Bind wallet in Senda desktop.{" "}
-                <Link
-                  href="/peer-bind"
-                  className="text-[var(--accent)] underline"
-                >
-                  Bind help →
-                </Link>
-              </p>
-            </>
+            <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-[var(--fg-muted)]">
+              Sign with the Solana wallet bound in Senda desktop. Credits,
+              tokens served, and Peer USD for that peer.{" "}
+              <Link
+                href="/contribute"
+                className="text-[var(--accent)] hover:underline"
+              >
+                Run a node
+              </Link>
+              {" · "}
+              <Link
+                href="/peer-bind"
+                className="text-[var(--accent)] hover:underline"
+              >
+                Bind help
+              </Link>
+            </p>
           )}
         </div>
 
-        {/* Signed-in only: compact account menu. Connect lives in the card below. */}
         {signedIn && wallet ? (
           <div className="relative shrink-0" ref={menuRef}>
             <button
@@ -249,11 +302,11 @@ export function EarnPanel() {
               onClick={() => setMenuOpen((o) => !o)}
               aria-expanded={menuOpen}
               aria-haspopup="menu"
-              className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-1.5 text-[12px] font-medium text-[var(--fg)] transition hover:border-[var(--accent)]/40 disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-1.5 text-[12px] font-medium text-[var(--fg)] transition hover:border-[var(--border-strong)] disabled:opacity-50"
             >
               <span
                 aria-hidden
-                className="h-2 w-2 rounded-full bg-[var(--accent)]"
+                className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]"
               />
               <span className="font-mono">{shortWallet(wallet)}</span>
               <span aria-hidden className="text-[var(--fg-muted)]">
@@ -263,7 +316,7 @@ export function EarnPanel() {
             {menuOpen ? (
               <div
                 role="menu"
-                className="absolute right-0 z-10 mt-2 w-44 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] py-1 shadow-lg"
+                className="absolute right-0 z-10 mt-2 w-44 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] py-1 shadow-[var(--shadow-md)]"
               >
                 <button
                   type="button"
@@ -289,147 +342,222 @@ export function EarnPanel() {
       </header>
 
       {!signedIn ? (
-        <section className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-5 py-5">
-          <h2 className="text-lg font-semibold tracking-tight">
-            Connect wallet
-          </h2>
-          <p className="text-[14px] leading-relaxed text-[var(--fg-muted)]">
-            Use the same Solana wallet you bound as the peer payout address
-            (Phantom or another wallet). We never store a session — each refresh
-            asks for a short signature.
-          </p>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void connect()}
-            className="rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-black disabled:opacity-50"
-          >
-            {busy ? "Signing…" : "Connect wallet"}
-          </button>
-        </section>
+        <>
+          <section className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-5 py-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0 max-w-md">
+                <h2 className="text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
+                  Sign in
+                </h2>
+                <p className="mt-2 text-[14px] leading-relaxed text-[var(--fg-muted)]">
+                  Same wallet as Peer USD → Bind in desktop. No session cookie —
+                  each refresh asks for a short signature.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void connect()}
+                className="shrink-0 rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-black disabled:opacity-50"
+              >
+                {busy ? "Signing…" : "Connect wallet"}
+              </button>
+            </div>
+          </section>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <StatCard
+              label="Contributor credits"
+              value="—"
+              hint="Tier-weighted · not cash"
+            />
+            <StatCard
+              label="Peer USD"
+              value="—"
+              hint="From paid /v1 mesh serves"
+            />
+            <StatCard
+              label="Tokens served"
+              value="—"
+              hint="By model after connect"
+            />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Panel title="Before you connect" meta="Requirements">
+              <ul className="space-y-2 text-[13px] leading-relaxed text-[var(--fg-muted)]">
+                <li>
+                  1.{" "}
+                  <Link
+                    href="/contribute"
+                    className="text-[var(--accent)] hover:underline"
+                  >
+                    Run a node
+                  </Link>{" "}
+                  and serve mesh traffic.
+                </li>
+                <li>
+                  2. Bind a Solana payout wallet in Senda desktop (Peer USD →
+                  Bind).
+                </li>
+                <li>
+                  3. Sign in here with that wallet to read credits and Peer USD.
+                </li>
+              </ul>
+            </Panel>
+            <Panel title="Settlement" meta="Public">
+              <p className="text-[13px] leading-relaxed text-[var(--fg-muted)]">
+                Aggregate liabilities and peer payouts are on{" "}
+                <Link
+                  href="/metrics"
+                  className="text-[var(--accent)] hover:underline"
+                >
+                  /metrics
+                </Link>
+                . Individual withdrawals link to Solscan after send.
+              </p>
+              <p className="mt-3 text-[12px] text-[var(--fg-muted)]">
+                API customers top up on{" "}
+                <Link href="/buy" className="text-[var(--accent)] hover:underline">
+                  /buy
+                </Link>
+                .
+              </p>
+            </Panel>
+          </div>
+        </>
       ) : null}
 
       {signedIn && data ? (
         <>
-          <section className="grid gap-4 sm:grid-cols-2">
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-4">
-              <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--fg-muted)]">
-                Contributor credits
-              </div>
-              <div className="mt-1 text-3xl font-semibold tabular-nums tracking-tight">
-                {data.credits?.storeReady
+          <div className="grid gap-3 sm:grid-cols-3">
+            <StatCard
+              label="Contributor credits"
+              value={
+                data.credits?.storeReady
                   ? (data.credits.credits ?? 0).toLocaleString()
-                  : "—"}
-              </div>
-              <p className="mt-1 text-[12px] text-[var(--fg-muted)]">
-                Tier-weighted tokens from mesh serves (not cash).
-              </p>
-            </div>
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-4">
-              <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--fg-muted)]">
-                Peer USD
-              </div>
-              <div className="mt-1 text-3xl font-semibold tabular-nums tracking-tight">
-                {data.peerUsd?.balance_usd == null
+                  : "—"
+              }
+              hint="Tier-weighted tokens · not cash"
+            />
+            <StatCard
+              label="Peer USD"
+              value={
+                data.peerUsd?.balance_usd == null
                   ? "—"
-                  : `$${data.peerUsd.balance_usd.toFixed(4)}`}
-              </div>
-              <p className="mt-1 text-[12px] text-[var(--fg-muted)]">
-                From paid /v1 mesh serves · min withdraw $
-                {data.peerUsd?.min_withdraw_usd ?? 10}
-                {data.peerUsd?.self_serve
-                  ? " · withdraw in desktop (auto under caps)"
-                  : " · payouts paused / ops-gated"}
-              </p>
-            </div>
-          </section>
+                  : `$${data.peerUsd.balance_usd.toFixed(4)}`
+              }
+              hint={
+                data.peerUsd?.self_serve
+                  ? `Min withdraw $${data.peerUsd.min_withdraw_usd ?? 10} · desktop`
+                  : `Min $${data.peerUsd?.min_withdraw_usd ?? 10} · payouts paused / ops-gated`
+              }
+            />
+            <StatCard
+              label="Tokens served"
+              value={
+                data.credits?.totalTokens
+                  ? formatTokenCount(data.credits.totalTokens)
+                  : "0"
+              }
+              hint="Completion tokens attributed to this peer"
+            />
+          </div>
 
-          <section className="space-y-3">
-            <h2 className="text-lg font-semibold tracking-tight">
-              Tokens served
-            </h2>
-            <p className="text-[13px] text-[var(--fg-muted)]">
-              Completion tokens attributed to this peer on the mesh ledger
-              {data.credits?.totalTokens
-                ? ` · ${formatTokenCount(data.credits.totalTokens)} total`
-                : ""}
-              .
-            </p>
-            {models.length === 0 ? (
-              <p className="text-[13px] text-[var(--fg-muted)]">
-                No attributed serves yet. Chat or /v1 traffic that lands on your
-                node will show up here after sync.
-              </p>
-            ) : (
-              <ul className="space-y-1.5">
-                {models.map(([model, tokens]) => (
-                  <li
-                    key={model}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-2"
-                  >
-                    <span className="font-mono text-[12px] text-[var(--accent)]">
-                      {model}
-                    </span>
-                    <span className="font-mono text-[12px] tabular-nums text-[var(--fg)]">
-                      {formatTokenCount(tokens)} tok
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Panel
+              title="Tokens by model"
+              meta={
+                data.credits?.totalTokens
+                  ? formatTokenCount(data.credits.totalTokens)
+                  : undefined
+              }
+            >
+              {models.length === 0 ? (
+                <p className="text-[13px] text-[var(--fg-muted)]">
+                  No attributed serves yet. Mesh chat or /v1 traffic on your
+                  node will appear after sync.
+                </p>
+              ) : (
+                <ul className="divide-y divide-[var(--border)]">
+                  {models.map(([model, tokens]) => (
+                    <li
+                      key={model}
+                      className="flex flex-wrap items-center justify-between gap-2 py-2"
+                    >
+                      <span className="font-mono text-[12px] text-[var(--fg)]">
+                        {model}
+                      </span>
+                      <span className="font-mono text-[12px] tabular-nums text-[var(--fg-muted)]">
+                        {formatTokenCount(tokens)} tok
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Panel>
 
-          {(data.pendingPayouts?.length ?? 0) > 0 ||
-          (data.payoutHistory?.length ?? 0) > 0 ? (
-            <section className="space-y-3">
-              <h2 className="text-lg font-semibold tracking-tight">
-                Payout history
-              </h2>
-              <p className="text-[13px] text-[var(--fg-muted)]">
-                USDC withdrawals for this peer. Sent rows link to Solscan.
-              </p>
-              <ul className="space-y-1.5">
-                {(data.payoutHistory?.length
-                  ? data.payoutHistory
-                  : data.pendingPayouts!
-                ).map((p) => (
-                  <li
-                    key={p.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-2 font-mono text-[12px]"
-                  >
-                    <span className="text-[var(--fg-muted)]">
-                      ${p.usd.toFixed(2)} · {p.status}
-                      {" · "}
-                      {new Date(p.createdAt).toLocaleDateString()}
-                    </span>
-                    {p.solscanUrl || p.txSignature ? (
-                      <a
-                        href={
-                          p.solscanUrl ??
-                          `https://solscan.io/tx/${p.txSignature}`
-                        }
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[var(--accent)] underline-offset-2 hover:underline"
-                      >
-                        {(p.txSignature ?? "tx").slice(0, 8)}…↗
-                      </a>
-                    ) : (
-                      <span className="text-[var(--fg-muted)]">{p.id.slice(0, 10)}…</span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
+            <Panel title="Payout history" meta="USDC">
+              {history.length === 0 ? (
+                <p className="text-[13px] text-[var(--fg-muted)]">
+                  No withdrawals yet. Request payout in desktop when Peer USD
+                  clears the minimum.
+                </p>
+              ) : (
+                <ul className="divide-y divide-[var(--border)]">
+                  {history.map((p) => (
+                    <li
+                      key={p.id}
+                      className="flex flex-wrap items-center justify-between gap-2 py-2 font-mono text-[12px]"
+                    >
+                      <span className="text-[var(--fg-muted)]">
+                        ${p.usd.toFixed(2)} · {p.status}
+                        {" · "}
+                        {new Date(p.createdAt).toLocaleDateString()}
+                      </span>
+                      {p.solscanUrl || p.txSignature ? (
+                        <a
+                          href={
+                            p.solscanUrl ??
+                            `https://solscan.io/tx/${p.txSignature}`
+                          }
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[var(--accent)] underline-offset-2 hover:underline"
+                        >
+                          {(p.txSignature ?? "tx").slice(0, 8)}…↗
+                        </a>
+                      ) : (
+                        <span className="text-[var(--fg-muted)]">
+                          {p.id.slice(0, 10)}…
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Panel>
+          </div>
         </>
       ) : null}
 
       {status ? (
-        <p className="text-[13px] text-[var(--accent)]" role="status">
+        <p
+          className="rounded-md border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-2 text-[13px] text-[var(--fg)]"
+          role="status"
+        >
           {status}
         </p>
       ) : null}
+
+      <p className="text-[11px] leading-relaxed text-[var(--fg-muted)]">
+        Contributor credits are not cash. Peer USD is a preview liability from
+        paid /v1 mesh serves — withdraw when enabled, subject to caps.{" "}
+        <Link href="/terms" className="text-[var(--accent)] hover:underline">
+          Terms
+        </Link>
+        .
+      </p>
     </div>
   );
 }
