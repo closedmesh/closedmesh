@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getPeerIdForWallet,
   getPeerUsdBalance,
+  listPeerPayoutHistory,
   listPendingPeerPayouts,
   peerUsdForCompletion,
   processPendingPeerPayouts,
@@ -9,6 +10,8 @@ import {
   requestPeerPayout,
   resetPeerEarningsMemory,
   setPeerPayoutWallet,
+  sumPaidOutPeerUsd,
+  updatePeerPayout,
 } from "./peer-earnings";
 import { MIN_WITHDRAW_USDC_ATOMIC } from "./solana-config";
 import { usdToMicros } from "./rate-card";
@@ -279,5 +282,41 @@ describe("processPendingPeerPayouts (5.D-auto)", () => {
 
     const pending = await listPendingPeerPayouts(10);
     expect(pending.some((p) => p.id === "po_day2")).toBe(true);
+  });
+
+  it("indexes payout history and paid_total on sent", async () => {
+    enablePayerConfigured();
+    process.env.SENDA_PEER_PAYOUTS_AUTO = "1";
+    delete process.env.SENDA_PAYOUT_DRY_RUN;
+    process.env.SENDA_PAYOUT_MAX_TICKET_USD = "100";
+    process.env.SENDA_PAYOUT_MAX_PEER_DAILY_USD = "100";
+    process.env.SENDA_PAYOUT_MAX_GLOBAL_DAILY_USD = "1000";
+
+    const peerId = "peerHIST001";
+    await setPeerPayoutWallet(
+      peerId,
+      "So11111111111111111111111111111111111111112",
+    );
+    await fundAboveMin(peerId);
+    const req = await requestPeerPayout({ peerId, payoutId: "po_hist1" });
+    expect(req.ok).toBe(true);
+
+    const histPending = await listPeerPayoutHistory(peerId, 10);
+    expect(histPending.some((p) => p.id === "po_hist1")).toBe(true);
+    await expect(sumPaidOutPeerUsd()).resolves.toBe(0);
+
+    vi.mocked(sendUsdc).mockResolvedValue({ ok: true, signature: "sig_hist" });
+    const processed = await processPendingPeerPayouts(5, { force: true });
+    expect(processed.sent).toBe(1);
+
+    const hist = await listPeerPayoutHistory(peerId, 10);
+    expect(hist[0]?.status).toBe("sent");
+    expect(hist[0]?.txSignature).toBe("sig_hist");
+    const paid = await sumPaidOutPeerUsd();
+    expect(paid).toBeGreaterThanOrEqual(MIN_WITHDRAW_USDC_ATOMIC);
+
+    // Idempotent paid_total on re-index
+    if (hist[0]) await updatePeerPayout(hist[0]);
+    await expect(sumPaidOutPeerUsd()).resolves.toBe(paid);
   });
 });

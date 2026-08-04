@@ -19,6 +19,7 @@ type PendingPayout = {
   usd: number;
   createdAt: string;
   txSignature: string | null;
+  solscanUrl?: string | null;
 };
 
 type EarnerPayload = {
@@ -38,6 +39,7 @@ type EarnerPayload = {
     self_serve: boolean;
   };
   pendingPayouts?: PendingPayout[];
+  payoutHistory?: PendingPayout[];
   error?: string;
   hint?: string;
 };
@@ -377,18 +379,44 @@ export function EarnPanel() {
             )}
           </section>
 
-          {(data.pendingPayouts?.length ?? 0) > 0 ? (
+          {(data.pendingPayouts?.length ?? 0) > 0 ||
+          (data.payoutHistory?.length ?? 0) > 0 ? (
             <section className="space-y-3">
               <h2 className="text-lg font-semibold tracking-tight">
-                Pending payouts
+                Payout history
               </h2>
-              <ul className="space-y-1 text-[12px] text-[var(--fg-muted)]">
-                {data.pendingPayouts!.map((p) => (
-                  <li key={p.id} className="font-mono">
-                    {p.id.slice(0, 12)}… ${p.usd.toFixed(2)} — {p.status}
-                    {p.txSignature
-                      ? ` · ${p.txSignature.slice(0, 8)}…`
-                      : ""}
+              <p className="text-[13px] text-[var(--fg-muted)]">
+                USDC withdrawals for this peer. Sent rows link to Solscan.
+              </p>
+              <ul className="space-y-1.5">
+                {(data.payoutHistory?.length
+                  ? data.payoutHistory
+                  : data.pendingPayouts!
+                ).map((p) => (
+                  <li
+                    key={p.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-2 font-mono text-[12px]"
+                  >
+                    <span className="text-[var(--fg-muted)]">
+                      ${p.usd.toFixed(2)} · {p.status}
+                      {" · "}
+                      {new Date(p.createdAt).toLocaleDateString()}
+                    </span>
+                    {p.solscanUrl || p.txSignature ? (
+                      <a
+                        href={
+                          p.solscanUrl ??
+                          `https://solscan.io/tx/${p.txSignature}`
+                        }
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[var(--accent)] underline-offset-2 hover:underline"
+                      >
+                        {(p.txSignature ?? "tx").slice(0, 8)}…↗
+                      </a>
+                    ) : (
+                      <span className="text-[var(--fg-muted)]">{p.id.slice(0, 10)}…</span>
+                    )}
                   </li>
                 ))}
               </ul>

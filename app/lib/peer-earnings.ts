@@ -29,10 +29,16 @@ const WALLET_PREFIX = "senda:peer:payout-wallet";
 /** Reverse index: Solana wallet → short peer id (for /earn Phantom sign-in). */
 const WALLET_PEER_PREFIX = "senda:peer:wallet-peer";
 const PENDING_ZSET = "senda:peer:payout:pending";
+/** Global payout history (score = created ms). Includes pending + terminal. */
+const HISTORY_ZSET = "senda:peer:payout:history";
+const BY_PEER_ZSET_PREFIX = "senda:peer:payout:by-peer";
 const PAYOUT_PREFIX = "senda:peer:payout";
 const PAYOUT_STATUS_PREFIX = "senda:peer:payout:status";
 const ACCRUE_REQ_PREFIX = "senda:peer:usd:req";
 const SPENT_DAY_PREFIX = "senda:peer:payout:spent";
+/** Lifetime USDC micros successfully sent to peers. */
+const PAID_TOTAL_KEY = "senda:peer:payout:paid_total";
+const PAID_COUNTED_PREFIX = "senda:peer:payout:paid_counted";
 
 type MemoryStore = {
   balances: Map<string, number>;
@@ -43,6 +49,11 @@ type MemoryStore = {
   accruedReqs: Set<string>;
   /** `${day}` or `${day}:${peerId}` → micros sent */
   spent: Map<string, number>;
+  /** peerId → payout ids newest-last */
+  historyByPeer: Map<string, string[]>;
+  historyGlobal: string[];
+  paidTotal: number;
+  paidCounted: Set<string>;
 };
 
 const memory: MemoryStore = {
@@ -52,6 +63,10 @@ const memory: MemoryStore = {
   pending: new Map(),
   accruedReqs: new Set(),
   spent: new Map(),
+  historyByPeer: new Map(),
+  historyGlobal: [],
+  paidTotal: 0,
+  paidCounted: new Set(),
 };
 
 function useMemory(): boolean {
@@ -73,6 +88,181 @@ export function resetPeerEarningsMemory(): void {
   memory.pending.clear();
   memory.accruedReqs.clear();
   memory.spent.clear();
+  memory.historyByPeer.clear();
+  memory.historyGlobal = [];
+  memory.paidTotal = 0;
+  memory.paidCounted.clear();
+}
+
+function historyScore(createdAt: string): number {
+  const t = Date.parse(createdAt);
+  return Number.isFinite(t) ? t : Date.now();
+}
+
+/** Index a payout for peer + global history (idempotent ZADD). */
+export async function indexPeerPayoutHistory(
+  request: PeerPayoutRequest,
+): Promise<void> {
+  const peerId = shortPeerId(request.peerId);
+  if (!peerId || !request.id) return;
+  const score = historyScore(request.createdAt);
+  const redis = getRedis();
+  if (redis) {
+    try {
+      await redis.zadd(HISTORY_ZSET, { score, member: request.id });
+      await redis.zadd(`${BY_PEER_ZSET_PREFIX}:${peerId}`, {
+        score,
+        member: request.id,
+      });
+    } catch {
+      /* best-effort */
+    }
+    return;
+  }
+  if (!memory.historyGlobal.includes(request.id)) {
+    memory.historyGlobal.push(request.id);
+  }
+  const list = memory.historyByPeer.get(peerId) ?? [];
+  if (!list.includes(request.id)) {
+    list.push(request.id);
+    memory.historyByPeer.set(peerId, list);
+  }
+  memory.pending.set(request.id, request);
+}
+
+/** Count sent micros once per payout id (for lifetime paid-out aggregate). */
+async function recordPaidOutIfNeeded(
+  request: PeerPayoutRequest,
+): Promise<void> {
+  if (request.status !== "sent" || request.micros <= 0) return;
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const counted = await redis.set(
+        `${PAID_COUNTED_PREFIX}:${request.id}`,
+        "1",
+        { nx: true },
+      );
+      if (counted === "OK") {
+        await redis.incrby(PAID_TOTAL_KEY, request.micros);
+      }
+    } catch {
+      /* best-effort */
+    }
+    return;
+  }
+  if (memory.paidCounted.has(request.id)) return;
+  memory.paidCounted.add(request.id);
+  memory.paidTotal += request.micros;
+}
+
+export async function getPeerPayout(
+  id: string,
+): Promise<PeerPayoutRequest | null> {
+  const payoutId = id.trim();
+  if (!payoutId) return null;
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const raw = await redis.get<string | null>(`${PAYOUT_PREFIX}:${payoutId}`);
+      if (!raw) return null;
+      return typeof raw === "string"
+        ? (JSON.parse(raw) as PeerPayoutRequest)
+        : raw;
+    } catch {
+      return null;
+    }
+  }
+  return memory.pending.get(payoutId) ?? null;
+}
+
+export async function listPeerPayoutHistory(
+  peerId: string,
+  limit = 20,
+): Promise<PeerPayoutRequest[]> {
+  const id = shortPeerId(peerId);
+  if (!id) return [];
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const ids = await redis.zrange<string[]>(
+        `${BY_PEER_ZSET_PREFIX}:${id}`,
+        0,
+        limit - 1,
+        { rev: true },
+      );
+      const out: PeerPayoutRequest[] = [];
+      for (const payoutId of ids) {
+        const req = await getPeerPayout(payoutId);
+        if (req) out.push(req);
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+  const ids = [...(memory.historyByPeer.get(id) ?? [])].reverse().slice(0, limit);
+  return ids
+    .map((payoutId) => memory.pending.get(payoutId))
+    .filter((r): r is PeerPayoutRequest => r != null);
+}
+
+/** Recent terminal/pending payouts for public audit (caller must redact). */
+export async function listRecentPeerPayouts(
+  limit = 20,
+): Promise<PeerPayoutRequest[]> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const ids = await redis.zrange<string[]>(HISTORY_ZSET, 0, limit - 1, {
+        rev: true,
+      });
+      const out: PeerPayoutRequest[] = [];
+      for (const payoutId of ids) {
+        const req = await getPeerPayout(payoutId);
+        if (req) out.push(req);
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+  return [...memory.historyGlobal]
+    .reverse()
+    .slice(0, limit)
+    .map((payoutId) => memory.pending.get(payoutId))
+    .filter((r): r is PeerPayoutRequest => r != null);
+}
+
+export async function sumPaidOutPeerUsd(): Promise<number> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const raw = await redis.get<number | string | null>(PAID_TOTAL_KEY);
+      const n = raw == null ? 0 : Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    } catch {
+      return 0;
+    }
+  }
+  return memory.paidTotal;
+}
+
+export async function countPendingPeerPayouts(): Promise<number> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      return Number(await redis.zcard(PENDING_ZSET)) || 0;
+    } catch {
+      return 0;
+    }
+  }
+  return [...memory.pending.values()].filter(
+    (p) =>
+      p.status === "pending" ||
+      p.status === "pending_ops" ||
+      p.status === "sending",
+  ).length;
 }
 
 /** UTC calendar day key YYYYMMDD for daily spend caps. */
@@ -385,6 +575,7 @@ export async function requestPeerPayout(input: {
         status,
         createdAt,
       };
+      await indexPeerPayoutHistory(request);
       return { ok: true, request };
     } catch (err) {
       return {
@@ -407,6 +598,7 @@ export async function requestPeerPayout(input: {
     createdAt,
   };
   memory.pending.set(request.id, request);
+  await indexPeerPayoutHistory(request);
   return { ok: true, request };
 }
 
@@ -456,9 +648,13 @@ export async function updatePeerPayout(
     if (request.status === "sent" || request.status === "failed") {
       await redis.zrem(PENDING_ZSET, request.id);
     }
+    await indexPeerPayoutHistory(request);
+    await recordPaidOutIfNeeded(request);
     return;
   }
   memory.pending.set(request.id, request);
+  await indexPeerPayoutHistory(request);
+  await recordPaidOutIfNeeded(request);
 }
 
 async function claimPeerPayout(id: string): Promise<boolean> {

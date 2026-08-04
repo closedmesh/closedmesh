@@ -63,6 +63,15 @@ export function solanaTreasuryAddress(): string | null {
 }
 
 /**
+ * Optional public payer pubkey for settlement transparency (not the secret).
+ * Set SENDA_SOLANA_PAYER_ADDRESS to the hot-wallet address that sends USDC.
+ */
+export function solanaPayerAddress(): string | null {
+  const raw = process.env.SENDA_SOLANA_PAYER_ADDRESS?.trim();
+  return raw || null;
+}
+
+/**
  * Base58 secret key (64-byte keypair) for sending USDC payouts/refunds.
  * Optional — when unset, withdrawals queue as `pending_ops` for local script.
  * Prefer a dedicated payer; never commit this value.

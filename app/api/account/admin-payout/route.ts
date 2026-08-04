@@ -5,6 +5,7 @@ import {
   updatePeerPayout,
   restorePeerUsd,
   creditPeerUsd,
+  getPeerPayout,
   getPeerUsdBalance,
   setPeerPayoutWallet,
   requestPeerPayout,
@@ -131,6 +132,23 @@ export async function POST(req: Request) {
         ...result.request,
         usd: microsToUsd(result.request.micros),
       },
+    });
+  }
+
+  if (action === "index_history") {
+    const id = body.id?.trim() ?? "";
+    if (!id) {
+      return NextResponse.json({ error: "id_required" }, { status: 400 });
+    }
+    const ticket = await getPeerPayout(id);
+    if (!ticket) {
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    await updatePeerPayout(ticket);
+    return NextResponse.json({
+      ok: true,
+      request: { ...ticket, usd: microsToUsd(ticket.micros) },
+      hint: "Indexed into history + paid_total if status=sent",
     });
   }
 

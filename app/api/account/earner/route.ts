@@ -6,6 +6,7 @@ import {
 import {
   getPeerIdForWallet,
   getPeerUsdBalance,
+  listPeerPayoutHistory,
   listPendingPeerPayouts,
   peerEarningsStoreReady,
 } from "../../../lib/peer-earnings";
@@ -60,21 +61,35 @@ export async function GET(req: Request) {
   }
   const peerId = shortPeerId(peerIdRaw);
 
-  const [usdMicros, credits, pendingAll] = await Promise.all([
+  const [usdMicros, credits, pendingAll, historyAll] = await Promise.all([
     getPeerUsdBalance(peerId),
     creditsStoreReady() ? getPeerCredits(peerId) : Promise.resolve(null),
     listPendingPeerPayouts(50),
+    listPeerPayoutHistory(peerId, 30),
   ]);
+
+  const mapPayout = (p: {
+    id: string;
+    status: string;
+    micros: number;
+    createdAt: string;
+    txSignature?: string;
+  }) => ({
+    id: p.id,
+    status: p.status,
+    usd: microsToUsd(p.micros),
+    createdAt: p.createdAt,
+    txSignature: p.txSignature ?? null,
+    solscanUrl: p.txSignature
+      ? `https://solscan.io/tx/${p.txSignature}`
+      : null,
+  });
 
   const pending = pendingAll
     .filter((p) => shortPeerId(p.peerId) === peerId)
-    .map((p) => ({
-      id: p.id,
-      status: p.status,
-      usd: microsToUsd(p.micros),
-      createdAt: p.createdAt,
-      txSignature: p.txSignature ?? null,
-    }));
+    .map(mapPayout);
+
+  const payoutHistory = historyAll.map(mapPayout);
 
   const tokensByModel = credits?.tokensByModel ?? {};
   const totalTokens = Object.values(tokensByModel).reduce(
@@ -101,5 +116,6 @@ export async function GET(req: Request) {
       self_serve: peerSelfServePayoutsEnabled(),
     },
     pendingPayouts: pending,
+    payoutHistory,
   });
 }

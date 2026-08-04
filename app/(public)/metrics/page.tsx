@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { PublicHeader } from "../../components/PublicHeader";
 import { MeshLiveStatus } from "../../components/MeshLiveStatus";
+import { SettlementPanel } from "../../components/SettlementPanel";
 import {
   type KpiMilestone,
   type KpiSnapshot,
@@ -403,9 +404,11 @@ export default function MetricsPage() {
         )}
 
         {/* Mesh share — the headline routable-network KPI */}
-        {dashboard?.meshShare && (
+        {dashboard?.meshShare ? (
           <MeshSharePanel meshShare={dashboard.meshShare} />
-        )}
+        ) : null}
+
+        <SettlementPanel />
 
         {/* Weekly KPI */}
         <section className="mb-10">
