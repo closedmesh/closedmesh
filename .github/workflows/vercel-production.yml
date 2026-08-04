@@ -14,6 +14,12 @@ on:
       - 'desktop/**'
       - 'internal/**'
       - '.agency/**'
+      - 'programs/**'
+      - 'tests/**'
+      - 'Anchor.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'tsconfig.anchor.json'
       - '**/*.md'
   workflow_dispatch:
 
