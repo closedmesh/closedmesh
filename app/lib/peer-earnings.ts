@@ -507,7 +507,7 @@ export async function creditPeerUsd(
   micros: number,
 ): Promise<number> {
   await restorePeerUsd(peerId, micros);
-  return getPeerUsdBalance(peerId);
+  return (await getPeerUsdBalance(peerId)) ?? 0;
 }
 
 export type ProcessPeerPayoutsOpts = {
