@@ -16,7 +16,12 @@ import { microsToUsd, usdToMicros } from "../../../lib/rate-card";
 import {
   peerPayoutMaxTicketMicros,
   solanaPayoutsConfigured,
+  solanaTreasuryAddress,
 } from "../../../lib/solana-config";
+import {
+  sendUsdc,
+  solanaPayerPublicKey,
+} from "../../../lib/solana-usdc-send";
 
 function cronAuthorized(req: Request): boolean {
   const secret = process.env.CRON_SECRET?.trim();
@@ -67,6 +72,50 @@ export async function POST(req: Request) {
   }
 
   const action = body.action?.trim() ?? "";
+
+  /**
+   * Ops E2E: move USDC from payer float → deposit treasury so deposit-sync
+   * can credit the payer wallet as a customer. Cap $20.
+   */
+  if (action === "fund_treasury") {
+    const treasury = solanaTreasuryAddress();
+    const payerPub = solanaPayerPublicKey();
+    if (!treasury || !payerPub || !solanaPayoutsConfigured()) {
+      return NextResponse.json(
+        { error: "payer_or_treasury_unconfigured" },
+        { status: 503 },
+      );
+    }
+    let micros = usdToMicros(5);
+    if (typeof body.usd === "number" && Number.isFinite(body.usd)) {
+      micros = usdToMicros(body.usd);
+    } else if (typeof body.micros === "number" && Number.isFinite(body.micros)) {
+      micros = Math.floor(body.micros);
+    }
+    const max = usdToMicros(20);
+    if (micros < usdToMicros(5) || micros > max) {
+      return NextResponse.json(
+        { error: "amount_out_of_range", hint: "Use $5–$20" },
+        { status: 400 },
+      );
+    }
+    const sent = await sendUsdc({
+      destinationWallet: treasury,
+      amountAtomic: micros,
+    });
+    if (!sent.ok) {
+      return NextResponse.json({ error: sent.error }, { status: 502 });
+    }
+    return NextResponse.json({
+      ok: true,
+      from: payerPub,
+      to: treasury,
+      usd: microsToUsd(micros),
+      txSignature: sent.signature,
+      solscanUrl: `https://solscan.io/tx/${sent.signature}`,
+      hint: "Run deposit-sync, then customer balance for `from` should rise",
+    });
+  }
 
   if (action === "credit") {
     const peerId = body.peerId?.trim() ?? "";

@@ -36,6 +36,12 @@ function loadPayer(): Keypair | null {
   }
 }
 
+/** Public key of the configured payer (null if unset / invalid). */
+export function solanaPayerPublicKey(): string | null {
+  const payer = loadPayer();
+  return payer ? payer.publicKey.toBase58() : null;
+}
+
 export async function sendUsdc(input: {
   destinationWallet: string;
   amountAtomic: number;
