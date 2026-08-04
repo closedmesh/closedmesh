@@ -477,12 +477,23 @@ export function BuyPanel() {
             API account
           </div>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
-            Balance &amp; keys
+            {signedIn ? "Balance & keys" : "Get API access"}
           </h1>
           <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-[var(--fg-muted)]">
-            Prepaid USDC balance for{" "}
-            <code className="text-[var(--fg)]">{apiBaseDisplay}</code>.
-            Homepage chat stays free.{" "}
+            {signedIn ? (
+              <>
+                Prepaid USDC balance for{" "}
+                <code className="text-[var(--fg)]">{apiBaseDisplay}</code>.
+                Homepage chat stays free.{" "}
+              </>
+            ) : (
+              <>
+                Top up with USDC, then connect to mint a{" "}
+                <code className="text-[var(--fg)]">ck_</code> key for{" "}
+                <code className="text-[var(--fg)]">{apiBaseDisplay}</code>.
+                Homepage chat stays free.{" "}
+              </>
+            )}
             <Link href="/docs" className="text-[var(--accent)] hover:underline">
               Docs
             </Link>
@@ -545,50 +556,36 @@ export function BuyPanel() {
       </header>
 
       {!signedIn ? (
-        <>
-          <section className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-5 py-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0 max-w-md">
-                <h2 className="text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
-                  Sign in
-                </h2>
-                <p className="mt-2 text-[14px] leading-relaxed text-[var(--fg-muted)]">
-                  Connect a Solana wallet. Your address is the account for this
-                  preview — deposits, keys, and refunds are signed, not
-                  session-stored.
-                </p>
-              </div>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void connect()}
-                className="shrink-0 rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-black disabled:opacity-50"
-              >
-                {busy ? "Connecting…" : "Connect wallet"}
-              </button>
-            </div>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+          <section className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-5 py-6">
+            <h2 className="text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
+              Sign in
+            </h2>
+            <p className="mt-2 text-[14px] leading-relaxed text-[var(--fg-muted)]">
+              Connect a Solana wallet to see your balance, mint{" "}
+              <code className="text-[var(--fg)]">ck_</code> keys, sync deposits,
+              and request refunds. Your address is the account — signed, not
+              session-stored.
+            </p>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void connect()}
+              className="mt-5 rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-black disabled:opacity-50"
+            >
+              {busy ? "Connecting…" : "Connect wallet"}
+            </button>
+            {dd ? (
+              <p className="mt-5 border-t border-[var(--border)] pt-4 text-[12px] text-[var(--fg-muted)]">
+                Daily-driver rate:{" "}
+                <span className="font-medium text-[var(--fg)]">{rateLabel}</span>{" "}
+                per MTok (prompt / completion).
+              </p>
+            ) : null}
           </section>
 
-          <div className="grid gap-3 sm:grid-cols-3">
-            <StatCard
-              label="API balance"
-              value="—"
-              hint="After connect"
-            />
-            <StatCard
-              label="Active keys"
-              value="—"
-              hint="ck_live_…"
-            />
-            <StatCard
-              label="Rate (daily-driver)"
-              value={rateLabel}
-              hint="USD per MTok · prompt / completion"
-            />
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Panel title="Deposit" meta="USDC · Solana">
+          <div className="space-y-4">
+            <Panel title="Deposit address" meta="USDC · Solana">
               {!info ? (
                 <p className="text-[13px] text-[var(--fg-muted)]">Loading…</p>
               ) : !info.configured || !info.treasury ? (
@@ -598,8 +595,8 @@ export function BuyPanel() {
               ) : (
                 <>
                   <p className="text-[13px] leading-relaxed text-[var(--fg-muted)]">
-                    Min top-up ${info.minTopupUsd} USDC mainnet. Connect to sync
-                    credits after sending.
+                    Send ≥ ${info.minTopupUsd} USDC on Solana mainnet, then
+                    connect and sync.
                   </p>
                   <code className="mt-3 block break-all rounded-md border border-[var(--border)] bg-[var(--bg)] px-3 py-2 font-mono text-[11px] text-[var(--fg)]">
                     {info.treasury}
@@ -610,26 +607,11 @@ export function BuyPanel() {
             <Panel title="Endpoint" meta="OpenAI-compatible">
               <p className="text-[13px] leading-relaxed text-[var(--fg-muted)]">
                 Base URL <code className="text-[var(--fg)]">{apiBase}</code>.
-                Auth header:{" "}
-                <code className="text-[var(--fg)]">Bearer ck_…</code>
-              </p>
-              <p className="mt-3 text-[12px] text-[var(--fg-muted)]">
-                Running a node? Peer USD withdraws on{" "}
-                <Link href="/earn" className="text-[var(--accent)] hover:underline">
-                  /earn
-                </Link>
-                . Public books:{" "}
-                <Link
-                  href="/metrics"
-                  className="text-[var(--accent)] hover:underline"
-                >
-                  /metrics
-                </Link>
-                .
+                Auth: <code className="text-[var(--fg)]">Bearer ck_…</code>
               </p>
             </Panel>
           </div>
-        </>
+        </div>
       ) : (
         <>
           <div className="grid gap-3 sm:grid-cols-3">

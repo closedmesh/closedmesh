@@ -251,15 +251,15 @@ export function EarnPanel() {
 
   return (
     <div className="space-y-8">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 max-w-xl">
-          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
-            Earner dashboard
-          </div>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
-            Node earnings
-          </h1>
-          {signedIn ? (
+      {signedIn ? (
+        <header className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 max-w-xl">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
+              Earner dashboard
+            </div>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
+              Node earnings
+            </h1>
             <p className="mt-2 text-[13px] text-[var(--fg-muted)]">
               Peer{" "}
               <span className="font-mono text-[var(--fg)]">{data!.peerId}</span>
@@ -273,159 +273,130 @@ export function EarnPanel() {
                 </span>
               ) : null}
             </p>
-          ) : (
-            <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-[var(--fg-muted)]">
-              Sign with the Solana wallet bound in Senda desktop. Credits,
-              tokens served, and Peer USD for that peer.{" "}
-              <Link
-                href="/contribute"
-                className="text-[var(--accent)] hover:underline"
-              >
-                Run a node
-              </Link>
-              {" · "}
-              <Link
-                href="/peer-bind"
-                className="text-[var(--accent)] hover:underline"
-              >
-                Bind help
-              </Link>
-            </p>
-          )}
-        </div>
-
-        {signedIn && wallet ? (
-          <div className="relative shrink-0" ref={menuRef}>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setMenuOpen((o) => !o)}
-              aria-expanded={menuOpen}
-              aria-haspopup="menu"
-              className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-1.5 text-[12px] font-medium text-[var(--fg)] transition hover:border-[var(--border-strong)] disabled:opacity-50"
-            >
-              <span
-                aria-hidden
-                className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]"
-              />
-              <span className="font-mono">{shortWallet(wallet)}</span>
-              <span aria-hidden className="text-[var(--fg-muted)]">
-                ▾
-              </span>
-            </button>
-            {menuOpen ? (
-              <div
-                role="menu"
-                className="absolute right-0 z-10 mt-2 w-44 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] py-1 shadow-[var(--shadow-md)]"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={busy}
-                  onClick={() => void load(wallet)}
-                  className="block w-full px-3 py-2 text-left text-[13px] text-[var(--fg)] hover:bg-[var(--bg-elev-2)] disabled:opacity-50"
-                >
-                  {busy ? "Signing…" : "Refresh"}
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={signOut}
-                  className="block w-full px-3 py-2 text-left text-[13px] text-[var(--fg-muted)] hover:bg-[var(--bg-elev-2)] hover:text-[var(--fg)]"
-                >
-                  Sign out
-                </button>
-              </div>
-            ) : null}
           </div>
-        ) : null}
-      </header>
 
-      {!signedIn ? (
-        <>
-          <section className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-5 py-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0 max-w-md">
-                <h2 className="text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
-                  Sign in
-                </h2>
-                <p className="mt-2 text-[14px] leading-relaxed text-[var(--fg-muted)]">
-                  Same wallet as Peer USD → Bind in desktop. No session cookie —
-                  each refresh asks for a short signature.
-                </p>
-              </div>
+          {wallet ? (
+            <div className="relative shrink-0" ref={menuRef}>
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void connect()}
-                className="shrink-0 rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-black disabled:opacity-50"
+                onClick={() => setMenuOpen((o) => !o)}
+                aria-expanded={menuOpen}
+                aria-haspopup="menu"
+                className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-elev)] px-3 py-1.5 text-[12px] font-medium text-[var(--fg)] transition hover:border-[var(--border-strong)] disabled:opacity-50"
               >
-                {busy ? "Signing…" : "Connect wallet"}
+                <span
+                  aria-hidden
+                  className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]"
+                />
+                <span className="font-mono">{shortWallet(wallet)}</span>
+                <span aria-hidden className="text-[var(--fg-muted)]">
+                  ▾
+                </span>
               </button>
+              {menuOpen ? (
+                <div
+                  role="menu"
+                  className="absolute right-0 z-10 mt-2 w-44 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] py-1 shadow-[var(--shadow-md)]"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={busy}
+                    onClick={() => void load(wallet)}
+                    className="block w-full px-3 py-2 text-left text-[13px] text-[var(--fg)] hover:bg-[var(--bg-elev-2)] disabled:opacity-50"
+                  >
+                    {busy ? "Signing…" : "Refresh"}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={signOut}
+                    className="block w-full px-3 py-2 text-left text-[13px] text-[var(--fg-muted)] hover:bg-[var(--bg-elev-2)] hover:text-[var(--fg)]"
+                  >
+                    Sign out
+                  </button>
+                </div>
+              ) : null}
             </div>
-          </section>
+          ) : null}
+        </header>
+      ) : (
+        <header className="max-w-lg">
+          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--accent)]">
+            Earners
+          </div>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
+            Sign in to view earnings
+          </h1>
+          <p className="mt-2 text-[13px] leading-relaxed text-[var(--fg-muted)]">
+            Credits, tokens served, and Peer USD are shown after you prove the
+            Solana wallet bound in Senda desktop. Nothing loads until then.
+          </p>
+        </header>
+      )}
 
-          <div className="grid gap-3 sm:grid-cols-3">
-            <StatCard
-              label="Contributor credits"
-              value="—"
-              hint="Tier-weighted · not cash"
-            />
-            <StatCard
-              label="Peer USD"
-              value="—"
-              hint="From paid /v1 mesh serves"
-            />
-            <StatCard
-              label="Tokens served"
-              value="—"
-              hint="By model after connect"
-            />
+      {!signedIn ? (
+        <section className="max-w-lg space-y-6">
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-5 py-6">
+            <h2 className="text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
+              Wallet required
+            </h2>
+            <p className="mt-2 text-[14px] leading-relaxed text-[var(--fg-muted)]">
+              Use the same address as Peer USD → Bind. No session cookie — each
+              refresh asks for a short signature.
+            </p>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void connect()}
+              className="mt-5 rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-semibold text-black disabled:opacity-50"
+            >
+              {busy ? "Signing…" : "Connect wallet"}
+            </button>
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Panel title="Before you connect" meta="Requirements">
-              <ul className="space-y-2 text-[13px] leading-relaxed text-[var(--fg-muted)]">
-                <li>
-                  1.{" "}
-                  <Link
-                    href="/contribute"
-                    className="text-[var(--accent)] hover:underline"
-                  >
-                    Run a node
-                  </Link>{" "}
-                  and serve mesh traffic.
-                </li>
-                <li>
-                  2. Bind a Solana payout wallet in Senda desktop (Peer USD →
-                  Bind).
-                </li>
-                <li>
-                  3. Sign in here with that wallet to read credits and Peer USD.
-                </li>
-              </ul>
-            </Panel>
-            <Panel title="Settlement" meta="Public">
-              <p className="text-[13px] leading-relaxed text-[var(--fg-muted)]">
-                Aggregate liabilities and peer payouts are on{" "}
+          <div className="space-y-3 text-[13px] leading-relaxed text-[var(--fg-muted)]">
+            <p className="text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
+              Need a bind first?
+            </p>
+            <ol className="list-decimal space-y-1.5 pl-5">
+              <li>
                 <Link
-                  href="/metrics"
+                  href="/contribute"
                   className="text-[var(--accent)] hover:underline"
                 >
-                  /metrics
+                  Run a node
+                </Link>{" "}
+                and serve mesh traffic.
+              </li>
+              <li>
+                Bind a payout wallet in desktop (Peer USD → Bind).{" "}
+                <Link
+                  href="/peer-bind"
+                  className="text-[var(--accent)] hover:underline"
+                >
+                  Bind help →
                 </Link>
-                . Individual withdrawals link to Solscan after send.
-              </p>
-              <p className="mt-3 text-[12px] text-[var(--fg-muted)]">
-                API customers top up on{" "}
-                <Link href="/buy" className="text-[var(--accent)] hover:underline">
-                  /buy
-                </Link>
-                .
-              </p>
-            </Panel>
+              </li>
+              <li>Return here and connect that wallet.</li>
+            </ol>
+            <p className="text-[12px]">
+              Public settlement aggregates:{" "}
+              <Link
+                href="/metrics"
+                className="text-[var(--accent)] hover:underline"
+              >
+                /metrics
+              </Link>
+              . API top-up:{" "}
+              <Link href="/buy" className="text-[var(--accent)] hover:underline">
+                /buy
+              </Link>
+              .
+            </p>
           </div>
-        </>
+        </section>
       ) : null}
 
       {signedIn && data ? (
