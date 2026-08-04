@@ -131,7 +131,7 @@ export default function PublicHomePage() {
               <NumberedStep
                 n={1}
                 title="Send a request"
-                body="A call to an OpenAI-compatible endpoint — from your code, an agent, or the chat on senda.network. Streamed response, no account, nothing to install."
+                body="Free chat on senda.network needs no account. Paid /v1 uses an OpenAI-compatible endpoint with a ck_ key from /buy. Streamed response either way."
               />
               <NumberedStep
                 n={2}
@@ -250,9 +250,9 @@ export default function PublicHomePage() {
               />
               <LaneCard
                 step="Earn"
-                title="Contributor credits"
-                body="Nodes track contributor credits for tokens served. Paid /v1 mesh serves may also accrue peer USD — bind a wallet in the desktop app to request payout. Separate from the customer API balance."
-                cta={{ label: "How credits work →", href: "/contribute#earn" }}
+                title="Credits and Peer USD"
+                body="Nodes track contributor credits (not cash). Paid /v1 mesh serves may also accrue Peer USD — bind a wallet in desktop, withdraw USDC on /earn when you clear the minimum. Separate from the customer API balance."
+                cta={{ label: "Earner dashboard →", href: "/earn" }}
               />
             </div>
           </div>
@@ -320,6 +320,14 @@ export default function PublicHomePage() {
               <FaqItem
                 q="Do I need to sign up or install anything to chat?"
                 a="No. Open senda.network and start typing — no account, no install. The desktop app is only needed if you want to run a node and contribute compute."
+              />
+              <FaqItem
+                q="Is there a paid API?"
+                a="Yes, as an early-access preview. Top up USDC on /buy, mint a ck_ key, and call senda.network/v1. Free chat stays free. Rates and settlement are preview-grade — see /terms."
+              />
+              <FaqItem
+                q="Do nodes earn USD?"
+                a="Contributor credits are not cash. Separately, peers that serve paid /v1 traffic may accrue Peer USD and withdraw USDC after binding a wallet (minimum on /earn). Preview: capped, kill-switchable, no payout SLA."
               />
               <FaqItem
                 q="Can a peer read my prompts?"

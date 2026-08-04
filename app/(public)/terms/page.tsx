@@ -9,7 +9,7 @@ export const metadata: Metadata = {
     "The terms for using Senda during early access: as-is availability, acceptable use, prepaid API balance, contribution credits vs peer USD, refunds, and node responsibilities.",
 };
 
-const UPDATED = "July 27, 2026";
+const UPDATED = "August 4, 2026";
 
 /**
  * /terms — short, honest terms of use that match the early-access reality:
@@ -98,7 +98,9 @@ export default function TermsPage() {
                 You are responsible for sending the correct asset (USDC) on Solana
                 mainnet to the published treasury address. Wrong-chain or
                 wrong-token transfers may be unrecoverable. Deposit attribution
-                and refunds depend on network confirmation and our ops process.
+                depends on network confirmation and our indexing process.
+                Settlement today uses a custodial USDC rail (hot float + Redis
+                balances); an on-chain escrow vault is not the customer path yet.
               </p>
             </Clause>
 
@@ -106,11 +108,12 @@ export default function TermsPage() {
               <p>
                 You may request a refund of unused prepaid API balance (subject
                 to a minimum threshold shown on /buy). Refunds return USDC to a
-                Solana wallet you control. During preview, refunds are processed
-                manually or semi-automatically and are not instant. Amounts
-                already spent on completed or in-flight inference are not
-                refundable. We may refuse or delay refunds that look abusive,
-                erroneous, or legally restricted.
+                Solana wallet you control. During preview, queued refunds may be
+                processed automatically under shared daily spend caps and kill
+                switches, or by ops if automation is paused — they are not
+                instant and not SLA-backed. Amounts already spent on completed or
+                in-flight inference are not refundable. We may refuse or delay
+                refunds that look abusive, erroneous, or legally restricted.
               </p>
             </Clause>
 
@@ -128,13 +131,23 @@ export default function TermsPage() {
               </p>
               <p>
                 Separately, when a peer serves a <em>paid</em>{" "}
-                <code className="text-[var(--fg)]">/v1</code> request, we may
-                accrue a peer USD liability toward a future USDC payout. Peer
-                payouts are a preview capability: thresholds, timing, tax/KYC
-                requirements, and availability can change, and there is{" "}
-                <span className="text-[var(--fg)]">no guarantee</span> that
-                accrued peer USD will be paid on any schedule until we say
-                payouts are generally available.
+                <code className="text-[var(--fg)]">/v1</code> mesh request, we
+                may accrue a peer USD liability payable in USDC. Peer payouts are
+                a preview capability: bind a wallet in the desktop app, withdraw
+                at or above the published minimum (see{" "}
+                <Link href="/earn" className="text-[var(--accent)] hover:underline">
+                  /earn
+                </Link>
+                ), and expect automated settlement under caps when enabled.
+                Thresholds, timing, tax/KYC requirements, and availability can
+                change. There is{" "}
+                <span className="text-[var(--fg)]">no guarantee</span> of payout
+                on any schedule, and automation can be paused. Public aggregates
+                appear on{" "}
+                <Link href="/metrics" className="text-[var(--accent)] hover:underline">
+                  /metrics
+                </Link>
+                .
               </p>
             </Clause>
 

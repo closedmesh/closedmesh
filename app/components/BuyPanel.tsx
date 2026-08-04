@@ -336,7 +336,7 @@ export function BuyPanel() {
       }
       setStatus(
         data.request?.usd != null
-          ? `Refund queued for $${data.request.usd.toFixed(2)} USDC (ops settles).`
+          ? `Refund queued for $${data.request.usd.toFixed(2)} USDC (auto under caps when enabled).`
           : data.hint || "Refund queued.",
       );
       await refreshBalance(wallet);
@@ -463,8 +463,9 @@ export function BuyPanel() {
         <h2 className="text-lg font-semibold tracking-tight">4. Request refund</h2>
         <p className="text-[14px] leading-relaxed text-[var(--fg-muted)]">
           Unused prepaid API balance can be returned as USDC to this wallet.
-          Minimum ${minWithdraw.toFixed(0)}. Preview settlements are ops-assisted
-          — see the{" "}
+          Minimum ${minWithdraw.toFixed(0)}. During preview, queued refunds may
+          settle automatically under shared spend caps and kill switches — not
+          instant, and spent balance is not refundable. See the{" "}
           <a href="/terms" className="text-[var(--accent)] hover:underline">
             terms
           </a>

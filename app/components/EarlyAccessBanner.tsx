@@ -20,10 +20,14 @@ export function EarlyAccessBanner() {
         Earner dashboard
       </Link>
       {" · "}
+      <Link href="/metrics" className="text-[var(--accent)] hover:underline">
+        Settlement books
+      </Link>
+      {" · "}
       <Link href="/contribute" className="text-[var(--accent)] hover:underline">
         Contributor credits
       </Link>{" "}
-      tracked; peer USD may accrue on paid serves. Free chat stays free.{" "}
+      (not cash); Peer USD may accrue on paid serves. Free chat stays free.{" "}
       <Link href="/security" className="text-[var(--accent)] hover:underline">
         Security →
       </Link>

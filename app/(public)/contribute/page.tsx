@@ -11,7 +11,7 @@ import { TIER_WEIGHT, TIER_LABELS } from "../../lib/model-tiers";
 export const metadata: Metadata = {
   title: "Run a node — Senda",
   description:
-    "Contribute compute to the Senda peer-to-peer LLM mesh. Earn credits for tokens served, see live network stats, and install the desktop app or CLI runtime.",
+    "Contribute compute to the Senda peer-to-peer LLM mesh. Track contributor credits (not cash) and Peer USD from paid /v1 serves. Install the desktop app or CLI runtime.",
 };
 
 /**
@@ -131,9 +131,22 @@ export default function ContributePage() {
               <span className="font-semibold text-[var(--fg)]">
                 Credits are a measure of contribution — not a payout.
               </span>{" "}
-              They accrue on the public ledger when your peer serves mesh chat
+              They accrue on the public ledger when your peer serves mesh
               traffic, attributed to the serving host and weighted by model
-              tier. Payout rails come later — this sprint instruments earnings.
+              tier. Separately, paid{" "}
+              <code className="text-[var(--fg)]">/v1</code> mesh serves may
+              accrue <strong className="font-medium text-[var(--fg)]">Peer USD</strong>{" "}
+              — bind a Solana wallet in the desktop app and withdraw USDC once
+              you clear the minimum (preview, capped, kill-switchable). History
+              on{" "}
+              <Link href="/earn" className="text-[var(--accent)] underline">
+                /earn
+              </Link>
+              ; public settlement books on{" "}
+              <Link href="/metrics" className="text-[var(--accent)] underline">
+                /metrics
+              </Link>
+              .
             </div>
 
             <div className="mt-8 grid gap-4 lg:grid-cols-2">

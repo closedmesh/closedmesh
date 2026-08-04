@@ -46,6 +46,34 @@ type LogEntry = {
 
 const ENTRIES: LogEntry[] = [
   {
+    id: "phase-5-prepaid-api-peer-settlement",
+    date: "2026-08-04",
+    phase: "Phase 5",
+    title:
+      "Prepaid USDC API balance shipped, with Peer USD settlement on a custodial rail.",
+    lede:
+      "Customers can top up USDC, mint a ck_ key, and call senda.network/v1. Peers who serve those paid requests accrue Peer USD and can withdraw USDC once they clear the minimum. Free chat stays free; contributor credits stay non-cash.",
+    body: [
+      "The paid API preview is live on senda.network/buy: a Solana wallet tops up a prepaid API balance in USDC, mints a ck_ key, and spends it on the OpenAI-compatible /v1 endpoint. Homepage chat does not require a wallet. Deposits are attributed from mainnet USDC transfers into the published treasury; unused balance can be refunded subject to a minimum. During this preview, queued refunds and peer payouts may settle automatically under shared daily spend caps and kill switches — not as an SLA, and not as a promise that automation stays on.",
+      "Contributor credits (tier-weighted tokens on /contribute) remain a measure of contribution, not cash. Separately, when a peer serves a paid /v1 request with served_by=mesh, a Peer USD liability accrues. Peers bind a Solana payout wallet in the desktop app, request withdraw at or above the published minimum on /earn, and can see payout history with Solscan links. Public aggregates — customer and peer liabilities, paid-out totals, recent peer payout txs — landed on /metrics. The end-to-end money loop (deposit → paid /v1 → Peer USD accrual → USDC withdraw) was proven on mainnet during early-access ops.",
+      "Honest scope: settlement today is a custodial USDC rail (hot float + Redis balances), not a customer-facing on-chain escrow vault. Program work for a vault exists as localnet-only scaffolding and is not the path customers use. There is no crypto token, no guaranteed payout schedule, and early access still means rates, caps, and availability can change — see /terms.",
+    ],
+    metrics: [
+      {
+        label: "Customer path",
+        value: "/buy → ck_ → senda.network/v1",
+      },
+      {
+        label: "Peer withdraw minimum",
+        value: "$10 USDC",
+      },
+      {
+        label: "Public books",
+        value: "/metrics settlement · /earn history",
+      },
+    ],
+  },
+  {
     id: "phase-3-peer-verification",
     date: "2026-05-30",
     phase: "Phase 3",
@@ -140,7 +168,8 @@ const ENTRIES: LogEntry[] = [
       "Every /api/chat request now passes through an SLA gate before routing. The gate reads the per-model TTFT_p50 and tok/s_p50 figures the mesh already gossips (from Phase 1) against per-tier targets: daily-driver passes at ≤ 3 s TTFT and ≥ 8 tok/s; capacity passes at ≤ 15 s TTFT and ≥ 0.8 tok/s. The evaluation is emitted on every response as x-senda-sla-status (one of meets-sla, no-peer-with-model, no-measurements, ttft-too-high, tps-too-low, both-too-low), with x-senda-sla-tier, x-senda-sla-candidates, and the best measured TTFT/tok-s when available. The headers are stable across both mesh-served and fallback-served responses, so an SDK caller can reason about routing without server logs.",
       "When the gate misses on a daily-driver-tier model, /api/chat routes the request to a configured external provider (today: OpenRouter, OpenAI-compatible). The stream protocol is identical to the mesh path so the chat UI doesn't branch. Three policy knobs scope external-supply use on this free testbed: it is enabled for daily-driver-tier models only (capacity-tier requests stay on the mesh — the network is the demo for those models), only for models with an explicit mapping (today: Qwen3-8B, Llama-3.1-8B-Instruct, Qwen2.5-Coder-7B-Instruct, DeepSeek-R1-Distill-Qwen-14B, Llama-3.2-3B), and behind a per-IP per-hour budget (default 20/hour) so external-provider cost is bounded while we're not yet billing. Over-budget IPs route to the mesh path. The route activates only when the external provider's API key is set in the environment — without one, the gate still evaluates and emits its decision header (x-senda-fallback-status: fallback-disabled), and the request stays on the mesh path.",
       "mesh_share_pct landed as the new headline metric on /metrics. Every chat request fires a fire-and-forget counter in Redis bucketed by hour and served-by value (mesh or fallback); the dashboard reads rolling-24h and rolling-7d windows and renders two cards above the weekly KPI panel. Each card shows the percentage prominently and the raw mesh / fallback / total counts beneath. The first data point recorded on prod read 100% mesh (1 request, 0 fallback, 1 total) — fallback hadn't fired because the external provider key wasn't yet configured. The metric is the right shape: it starts wherever it is, it moves with what the network actually does, and it gives a single number to drive week-over-week. The capacity-tier 70B serves from the 2026-05-23 milestone capture sit in the milestones section above the metric, where they belong as proof-of-capacity rather than as a claim about chat speed.",
-      "Update later the same day (2026-05-24): the entry above describes the routing primitive correctly, but earlier paragraphs implied the external-provider path is the product. It isn't — the product is a paid inference API with two supply sources, and that API hasn't shipped yet. What shipped on 2026-05-24 is the routing primitive on the free /chat testbed: the SLA gate decides whether a request can be served by a mesh peer at chat-viable latency; the response carries served_by accounting; mesh_share_pct measures how often the mesh actually served. The same router and the same accounting are the substrate the paid API will run on — once it ships, the customer pays the rate card per request, the mesh peer earns the peer-payout rate when they served, and the external-provider cost (when that path serves) is recovered from the customer's payment. Mesh peers are the network's differentiated supply; external providers are cost-of-goods that guarantee uptime so the API is sellable. mesh_share_pct then stops being just a routing-health number and becomes the margin-mix lever: every percentage point of mesh share is a percentage point of revenue that flows to a peer instead of out to an external provider. The 100% reading on the first sample is honest about today's state; the work ahead is to keep it honest as real traffic flows through both supply paths.",
+      "Update later the same day (2026-05-24): the entry above describes the routing primitive correctly, but earlier paragraphs implied the external-provider path is the product. It isn't — the product is a paid inference API with two supply sources. What shipped on 2026-05-24 is the routing primitive on the free /chat testbed: the SLA gate decides whether a request can be served by a mesh peer at chat-viable latency; the response carries served_by accounting; mesh_share_pct measures how often the mesh actually served. Mesh peers are the network's differentiated supply; external providers are cost-of-goods that guarantee uptime so the API is sellable. mesh_share_pct then stops being just a routing-health number and becomes the margin-mix lever: every percentage point of mesh share is a percentage point of revenue that flows to a peer instead of out to an external provider.",
+      "Correction (2026-08-04): the 2026-05-24 note said the paid inference API hadn't shipped yet. A prepaid USDC API balance, Peer USD accrual, and custodial settlement preview later shipped — see the Phase 5 entry phase-5-prepaid-api-peer-settlement. The 2026-05-24 routing primitive description itself remains accurate.",
     ],
     metrics: [
       {

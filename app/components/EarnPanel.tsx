@@ -338,8 +338,8 @@ export function EarnPanel() {
                 From paid /v1 mesh serves · min withdraw $
                 {data.peerUsd?.min_withdraw_usd ?? 10}
                 {data.peerUsd?.self_serve
-                  ? " · request payout in desktop"
-                  : " · ops-gated payouts"}
+                  ? " · withdraw in desktop (auto under caps)"
+                  : " · payouts paused / ops-gated"}
               </p>
             </div>
           </section>

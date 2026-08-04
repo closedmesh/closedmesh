@@ -13,12 +13,9 @@ export const metadata: Metadata = {
 /**
  * /docs — the developer surface.
  *
- * The site sells an "OpenAI-compatible API" on the homepage and /about but
- * never showed anyone how to call it. This page closes that gap, and stays
- * honest about the early-access reality (see the access-paths table): the
- * fully-open, works-today path is running a node and hitting your own local
- * runtime; the hosted entry exposes `/v1/models` openly but gates
- * `/v1/chat/completions` until the Phase 5 paid API ships public keys.
+ * Access paths: local runtime (open), entry.senda.network (models open /
+ * chat operator-gated), senda.network/v1 paid preview via /buy + ck_ keys,
+ * and free web chat. Keep the table honest as those states change.
  */
 export default function DocsPage() {
   return (
@@ -46,7 +43,8 @@ export default function DocsPage() {
               endpoint. Anything that speaks the OpenAI API — the official
               SDKs, LangChain, your own scripts — works by changing one base
               URL. Below is exactly how, and an honest map of what&apos;s open
-              today versus what arrives with the paid API.
+              today — including the paid API preview on{" "}
+              <code className="font-mono text-[var(--fg)]">senda.network/v1</code>.
             </p>
           </div>
         </div>
@@ -63,10 +61,10 @@ export default function DocsPage() {
               What&apos;s open today.
             </h2>
             <p className="mt-3 text-[15px] leading-relaxed text-[var(--fg-muted)]">
-              Senda is in early access, so the surfaces aren&apos;t all
-              equally open yet. The fully-open path that works right now is
-              running a node and calling your own local runtime — same code,
-              same model quality, and the prompt never leaves your machine.
+              Senda is in early access, so the surfaces aren&apos;t all equally
+              open. Local nodes are fully open with no key. The hosted paid
+              preview on senda.network/v1 works today via /buy. The public entry
+              node still gates chat completions for operators.
             </p>
           </div>
 
@@ -131,8 +129,8 @@ export default function DocsPage() {
                     Bearer ck_…
                   </td>
                   <td className="px-5 py-4">
-                    <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[11px] text-amber-200">
-                      Preview — get a key
+                    <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-300">
+                      Live preview — get a key
                     </span>
                   </td>
                 </tr>
@@ -336,16 +334,23 @@ for chunk in stream:
       <section>
         <div className="mx-auto max-w-5xl px-6 py-16 text-center">
           <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-            Run a node, get the API.
+            Call the mesh — or run a node.
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-[15px] leading-relaxed text-[var(--fg-muted)]">
-            The fastest path to programmatic access today is your own node —
-            full quality, no key, nothing leaves your machine.
+            Paid preview keys at /buy hit senda.network/v1. For local-only
+            access with no key, run your own node — full quality, nothing leaves
+            your machine.
           </p>
           <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
             <Link
-              href="/download"
+              href="/buy"
               className="rounded-lg bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-black shadow-[0_6px_18px_-10px_rgba(26,157,95,0.7)] transition hover:brightness-110"
+            >
+              Get a preview key
+            </Link>
+            <Link
+              href="/download"
+              className="rounded-lg border border-[var(--border)] bg-[var(--bg-elev)] px-5 py-2.5 text-sm font-medium text-[var(--fg)] transition hover:bg-[var(--bg-elev-2)]"
             >
               Run a node
             </Link>

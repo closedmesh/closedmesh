@@ -130,10 +130,24 @@ export default function SecurityPage() {
               <li>Hardware attestation or TEE-isolated inference</li>
               <li>SLA-grade uptime or latency on the free early-access mesh</li>
               <li>
-                A crypto token, on-chain ledger, or guaranteed fiat payouts
-                (contributors earn <em>credits</em> during early access — see{" "}
+                A crypto token, customer-facing on-chain escrow vault, or{" "}
+                <em>guaranteed</em> fiat/USDC payouts. Contributor{" "}
+                <em>credits</em> are not cash (
                 <Link href="/contribute" className="text-[var(--accent)] hover:underline">
                   /contribute
+                </Link>
+                ). Peer USD + prepaid API balance exist as an early-access
+                preview with caps — see{" "}
+                <Link href="/earn" className="text-[var(--accent)] hover:underline">
+                  /earn
+                </Link>
+                ,{" "}
+                <Link href="/buy" className="text-[var(--accent)] hover:underline">
+                  /buy
+                </Link>
+                ,{" "}
+                <Link href="/terms" className="text-[var(--accent)] hover:underline">
+                  /terms
                 </Link>
                 )
               </li>
@@ -176,7 +190,7 @@ export default function SecurityPage() {
                   />
                   <CompareRow
                     dim="Supply model"
-                    us="Open contributors; credits → future payouts"
+                    us="Open contributors; credits + preview Peer USD"
                     centralized="Vendor capacity"
                     attestation="Curated providers"
                   />

@@ -367,14 +367,25 @@ export default function MetricsPage() {
               Mesh metrics
             </div>
             <h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">
-              Capacity, speed, and milestones
+              Capacity, speed, settlement
             </h1>
             <p className="mt-2 max-w-xl text-[13px] leading-relaxed text-[var(--fg-muted)]">
-              Milestones persist when the mesh sleeps. Weekly KPIs use hourly
-              snapshots from the mesh entry and keep peak values for the week.
+              Milestones and weekly KPIs from the mesh entry. Below: public USDC
+              settlement aggregates (liabilities, peer payouts) for the paid API
+              preview — verify individual txs on Solscan via{" "}
+              <Link href="/earn" className="text-[var(--accent)] hover:underline">
+                /earn
+              </Link>
+              .
             </p>
           </div>
           <div className="flex gap-3 text-[12px]">
+            <Link
+              href="/buy"
+              className="text-[var(--fg-muted)] hover:text-[var(--fg)]"
+            >
+              API preview →
+            </Link>
             <Link
               href="/status"
               className="text-[var(--fg-muted)] hover:text-[var(--fg)]"

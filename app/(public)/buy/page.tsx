@@ -34,16 +34,24 @@ export default function BuyPage() {
               Homepage chat stays free — no wallet required.
             </p>
             <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-[var(--fg-muted)]">
-              Running a node?{" "}
+              Unused balance can be refunded as USDC (minimum on this page;
+              may auto-settle under caps). Running a node?{" "}
               <Link href="/contribute" className="text-[var(--accent)] underline">
                 Contribution credits
               </Link>{" "}
               stay illustrative; paid{" "}
-              <code className="text-[var(--fg)]">/v1</code> serves can accrue a
-              separate peer USD balance (bind wallet in the desktop app to
-              request payout). See{" "}
+              <code className="text-[var(--fg)]">/v1</code> mesh serves may
+              accrue Peer USD — bind a wallet in desktop and withdraw on{" "}
+              <Link href="/earn" className="text-[var(--accent)] underline">
+                /earn
+              </Link>
+              . Settlement aggregates:{" "}
+              <Link href="/metrics" className="text-[var(--accent)] underline">
+                /metrics
+              </Link>
+              .{" "}
               <Link href="/terms" className="text-[var(--accent)] underline">
-                terms
+                Terms
               </Link>
               .
             </p>
