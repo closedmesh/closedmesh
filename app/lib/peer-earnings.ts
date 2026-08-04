@@ -4,8 +4,9 @@
  * Separate from contributor credits (`senda:credits:*`), which stay
  * tier-weighted instrumentation. This ledger is micro-USD owed for payout.
  *
- * Public self-serve withdraw is disabled (ops-only). Accrual still runs on
- * paid /v1 mesh serves. Liability keys do not expire.
+ * Accrual on paid /v1 mesh serves. Self-serve withdraw + 5.D-auto process
+ * (caps / dry-run / AUTO kill switch) — see Decision 4.
+ * Liability keys do not expire.
  */
 
 import { randomBytes } from "crypto";
@@ -13,6 +14,11 @@ import { getRedis } from "./redis";
 import { getRateCardRow, tokensCostMicros } from "./rate-card";
 import {
   MIN_WITHDRAW_USDC_ATOMIC,
+  peerPayoutDryRun,
+  peerPayoutMaxGlobalDailyMicros,
+  peerPayoutMaxPeerDailyMicros,
+  peerPayoutMaxTicketMicros,
+  peerPayoutsAutoEnabled,
   solanaPayoutsConfigured,
 } from "./solana-config";
 import { shortPeerId } from "./verification-receipts";
@@ -26,6 +32,7 @@ const PENDING_ZSET = "senda:peer:payout:pending";
 const PAYOUT_PREFIX = "senda:peer:payout";
 const PAYOUT_STATUS_PREFIX = "senda:peer:payout:status";
 const ACCRUE_REQ_PREFIX = "senda:peer:usd:req";
+const SPENT_DAY_PREFIX = "senda:peer:payout:spent";
 
 type MemoryStore = {
   balances: Map<string, number>;
@@ -34,6 +41,8 @@ type MemoryStore = {
   walletPeers: Map<string, string>;
   pending: Map<string, PeerPayoutRequest>;
   accruedReqs: Set<string>;
+  /** `${day}` or `${day}:${peerId}` → micros sent */
+  spent: Map<string, number>;
 };
 
 const memory: MemoryStore = {
@@ -42,6 +51,7 @@ const memory: MemoryStore = {
   walletPeers: new Map(),
   pending: new Map(),
   accruedReqs: new Set(),
+  spent: new Map(),
 };
 
 function useMemory(): boolean {
@@ -62,6 +72,45 @@ export function resetPeerEarningsMemory(): void {
   memory.walletPeers.clear();
   memory.pending.clear();
   memory.accruedReqs.clear();
+  memory.spent.clear();
+}
+
+/** UTC calendar day key YYYYMMDD for daily spend caps. */
+export function payoutUtcDayKey(now = new Date()): string {
+  return now.toISOString().slice(0, 10).replace(/-/g, "");
+}
+
+async function getSpentMicros(key: string): Promise<number> {
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const raw = await redis.get<number | string | null>(
+        `${SPENT_DAY_PREFIX}:${key}`,
+      );
+      const n = raw == null ? 0 : Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    } catch {
+      return 0;
+    }
+  }
+  return memory.spent.get(key) ?? 0;
+}
+
+async function addSpentMicros(key: string, micros: number): Promise<void> {
+  if (micros <= 0) return;
+  const redis = getRedis();
+  if (redis) {
+    try {
+      const full = `${SPENT_DAY_PREFIX}:${key}`;
+      await redis.incrby(full, micros);
+      // Keep ~3 days of cap windows.
+      await redis.expire(full, 3 * 24 * 3600);
+    } catch {
+      /* best-effort; next reconcile catches drift */
+    }
+    return;
+  }
+  memory.spent.set(key, (memory.spent.get(key) ?? 0) + micros);
 }
 
 export function newPeerPayoutId(): string {
@@ -450,17 +499,77 @@ export async function restorePeerUsd(
 }
 
 /**
+ * Ops/canary: credit peer USD liability (same ledger as restore).
+ * Returns new balance micros.
+ */
+export async function creditPeerUsd(
+  peerId: string,
+  micros: number,
+): Promise<number> {
+  await restorePeerUsd(peerId, micros);
+  return getPeerUsdBalance(peerId);
+}
+
+export type ProcessPeerPayoutsOpts = {
+  /**
+   * Ops `admin-payout` process: bypass SENDA_PEER_PAYOUTS_AUTO.
+   * Still honors dry-run, caps, and payer config.
+   */
+  force?: boolean;
+};
+
+export type ProcessPeerPayoutsResult = {
+  processed: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  dryRun: number;
+  autoDisabled: boolean;
+  wouldSend: Array<{ id: string; peerId: string; micros: number; wallet: string }>;
+};
+
+/**
  * Attempt on-chain send for pending payouts when payer secret is configured.
  * Claim lock prevents double-send across overlapping workers.
+ *
+ * 5.D-auto: AUTO kill switch (cron), dry-run, per-ticket / daily caps.
  */
 export async function processPendingPeerPayouts(
   limit = 5,
-): Promise<{ processed: number; sent: number; failed: number; skipped: number }> {
+  opts: ProcessPeerPayoutsOpts = {},
+): Promise<ProcessPeerPayoutsResult> {
+  const wouldSend: ProcessPeerPayoutsResult["wouldSend"] = [];
+  const empty = (
+    extra: Partial<ProcessPeerPayoutsResult> = {},
+  ): ProcessPeerPayoutsResult => ({
+    processed: 0,
+    sent: 0,
+    failed: 0,
+    skipped: 0,
+    dryRun: 0,
+    autoDisabled: false,
+    wouldSend,
+    ...extra,
+  });
+
+  if (!opts.force && !peerPayoutsAutoEnabled()) {
+    return empty({ autoDisabled: true });
+  }
+
+  const dryRun = peerPayoutDryRun();
+  const maxTicket = peerPayoutMaxTicketMicros();
+  const maxPeerDay = peerPayoutMaxPeerDailyMicros();
+  const maxGlobalDay = peerPayoutMaxGlobalDailyMicros();
+  const day = payoutUtcDayKey();
+
   const pending = await listPendingPeerPayouts(limit);
   let processed = 0;
   let sent = 0;
   let failed = 0;
   let skipped = 0;
+  let dryRunCount = 0;
+
+  let globalSpent = await getSpentMicros(day);
 
   for (const req of pending) {
     if (req.status === "sending") {
@@ -474,6 +583,43 @@ export async function processPendingPeerPayouts(
     if (!solanaPayoutsConfigured()) {
       req.status = "pending_ops";
       await updatePeerPayout(req);
+      skipped += 1;
+      continue;
+    }
+
+    if (req.micros > maxTicket) {
+      const claimedOver = await claimPeerPayout(req.id);
+      if (!claimedOver) {
+        skipped += 1;
+        continue;
+      }
+      processed += 1;
+      req.status = "failed";
+      req.error = `above_ticket_cap:${req.micros}>${maxTicket}`;
+      await updatePeerPayout(req);
+      await restorePeerUsd(req.peerId, req.micros);
+      failed += 1;
+      continue;
+    }
+
+    const peerSpent = await getSpentMicros(`${day}:${req.peerId}`);
+    if (
+      peerSpent + req.micros > maxPeerDay ||
+      globalSpent + req.micros > maxGlobalDay
+    ) {
+      // Leave pending for a later window / raised caps.
+      skipped += 1;
+      continue;
+    }
+
+    if (dryRun) {
+      dryRunCount += 1;
+      wouldSend.push({
+        id: req.id,
+        peerId: req.peerId,
+        micros: req.micros,
+        wallet: req.wallet,
+      });
       skipped += 1;
       continue;
     }
@@ -495,8 +641,13 @@ export async function processPendingPeerPayouts(
       req.status = "sent";
       req.txSignature = result.signature;
       await updatePeerPayout(req);
+      await addSpentMicros(day, req.micros);
+      await addSpentMicros(`${day}:${req.peerId}`, req.micros);
+      globalSpent += req.micros;
       sent += 1;
     } else {
+      // sendAndConfirm failed — treat as failed + restore.
+      // If a future path returns "submitted_unknown", do not restore.
       req.status = "failed";
       req.error = result.error;
       await updatePeerPayout(req);
@@ -505,7 +656,15 @@ export async function processPendingPeerPayouts(
     }
   }
 
-  return { processed, sent, failed, skipped };
+  return {
+    processed,
+    sent,
+    failed,
+    skipped,
+    dryRun: dryRunCount,
+    autoDisabled: false,
+    wouldSend,
+  };
 }
 
 /** Sum all peer USD balances (SCAN — ops reconcile). */

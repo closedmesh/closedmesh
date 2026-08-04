@@ -4,13 +4,18 @@ import {
   processPendingPeerPayouts,
   updatePeerPayout,
   restorePeerUsd,
+  creditPeerUsd,
+  getPeerUsdBalance,
   setPeerPayoutWallet,
   requestPeerPayout,
   newPeerPayoutId,
   type PeerPayoutRequest,
 } from "../../../lib/peer-earnings";
-import { microsToUsd } from "../../../lib/rate-card";
-import { solanaPayoutsConfigured } from "../../../lib/solana-config";
+import { microsToUsd, usdToMicros } from "../../../lib/rate-card";
+import {
+  peerPayoutMaxTicketMicros,
+  solanaPayoutsConfigured,
+} from "../../../lib/solana-config";
 
 function cronAuthorized(req: Request): boolean {
   const secret = process.env.CRON_SECRET?.trim();
@@ -50,6 +55,9 @@ export async function POST(req: Request) {
     txSignature?: string;
     error?: string;
     request?: PeerPayoutRequest;
+    /** Ops credit: USD (preferred) or micros */
+    usd?: number;
+    micros?: number;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -58,6 +66,42 @@ export async function POST(req: Request) {
   }
 
   const action = body.action?.trim() ?? "";
+
+  if (action === "credit") {
+    const peerId = body.peerId?.trim() ?? "";
+    if (!peerId) {
+      return NextResponse.json({ error: "peerId_required" }, { status: 400 });
+    }
+    let micros = 0;
+    if (typeof body.micros === "number" && Number.isFinite(body.micros)) {
+      micros = Math.floor(body.micros);
+    } else if (typeof body.usd === "number" && Number.isFinite(body.usd)) {
+      micros = usdToMicros(body.usd);
+    }
+    if (micros <= 0) {
+      return NextResponse.json({ error: "usd_or_micros_required" }, { status: 400 });
+    }
+    // Hard ceiling: never ops-credit above current ticket cap.
+    const max = peerPayoutMaxTicketMicros();
+    if (micros > max) {
+      return NextResponse.json(
+        {
+          error: "above_ticket_cap",
+          max_usd: microsToUsd(max),
+          hint: "Raise SENDA_PAYOUT_MAX_TICKET_USD or credit a smaller amount",
+        },
+        { status: 400 },
+      );
+    }
+    const balance = await creditPeerUsd(peerId, micros);
+    return NextResponse.json({
+      ok: true,
+      peerId,
+      credited_usd: microsToUsd(micros),
+      balance_usd: microsToUsd(balance),
+      balance_usd_micros: balance,
+    });
+  }
 
   if (action === "register_wallet") {
     const peerId = body.peerId?.trim() ?? "";
@@ -91,7 +135,8 @@ export async function POST(req: Request) {
   }
 
   if (action === "process") {
-    const result = await processPendingPeerPayouts(10);
+    // Ops intentional: bypass AUTO kill switch; still honors dry-run + caps.
+    const result = await processPendingPeerPayouts(10, { force: true });
     return NextResponse.json({ ok: true, ...result });
   }
 

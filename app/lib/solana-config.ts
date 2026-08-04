@@ -81,3 +81,50 @@ export function solanaDepositsConfigured(): boolean {
 export function solanaPayoutsConfigured(): boolean {
   return solanaTreasuryAddress() != null && solanaPayerSecretBase58() != null;
 }
+
+/**
+ * 5.D-auto: cron/auto processing of pending peer payouts.
+ * Default OFF — set SENDA_PEER_PAYOUTS_AUTO=1 only after caps + canary checklist.
+ */
+export function peerPayoutsAutoEnabled(): boolean {
+  const raw = process.env.SENDA_PEER_PAYOUTS_AUTO?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on";
+}
+
+/**
+ * When set, process path claims nothing and does not broadcast —
+ * reports what would send (ops / cron dry-run).
+ */
+export function peerPayoutDryRun(): boolean {
+  const raw = process.env.SENDA_PAYOUT_DRY_RUN?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "on";
+}
+
+function envUsdToMicros(
+  envName: string,
+  defaultUsd: number,
+): number {
+  const raw = process.env[envName]?.trim();
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) {
+      return Math.floor(n * 10 ** USDC_DECIMALS);
+    }
+  }
+  return Math.floor(defaultUsd * 10 ** USDC_DECIMALS);
+}
+
+/** Max USDC (atomic) for a single payout ticket. Default $50. */
+export function peerPayoutMaxTicketMicros(): number {
+  return envUsdToMicros("SENDA_PAYOUT_MAX_TICKET_USD", 50);
+}
+
+/** Max USDC (atomic) sent to one peer per UTC day. Default $50. */
+export function peerPayoutMaxPeerDailyMicros(): number {
+  return envUsdToMicros("SENDA_PAYOUT_MAX_PEER_DAILY_USD", 50);
+}
+
+/** Max USDC (atomic) sent across all peers per UTC day. Default $100. */
+export function peerPayoutMaxGlobalDailyMicros(): number {
+  return envUsdToMicros("SENDA_PAYOUT_MAX_GLOBAL_DAILY_USD", 100);
+}
