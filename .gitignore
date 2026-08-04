@@ -42,6 +42,14 @@ docs/confidential-inference.md
 # Vercel
 .vercel/
 
+# Anchor / Solana program build artifacts — never commit keypairs or target/
+.anchor/
+target/
+**/*-keypair.json
+programs/senda-vault/.keys/
+**/*.rs.bk
+test-ledger/
+
 # Local archives / scratch artifacts the team drops at the repo root.
 # Easy to commit by accident on a `git add -A` and bloats history once
 # pushed (see commit 657c996 — 6.6 MB Archive.zip slipped through).

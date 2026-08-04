@@ -29,12 +29,19 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
     "@tailwindcss/postcss": "^4",
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitest/coverage-v8": "^4.1.6",
+    "bn.js": "^5.2.5",
+    "chai": "^6.2.2",
+    "mocha": "^11.8.0",
     "tailwindcss": "^4",
+    "ts-mocha": "^11.1.0",
     "typescript": "^5",
     "vitest": "^4.1.6"
   }
