@@ -178,14 +178,13 @@ fn main() {
                 }
             }
 
-            // The .app should land on the mesh control dashboard, not on
-            // the public marketing homepage. `mesh::preferred_url()`
-            // returns just the base; we append `/dashboard` (the control
-            // group's entry point) here. If the bundled controller failed
-            // to start and we fell back to senda.network, /dashboard is
-            // 404'd by middleware on the public site — that path renders
-            // a styled "not found" with a link to /, which is the
-            // graceful fallback we want anyway.
+            // Land on the local chat UI, not the public marketing site.
+            // `mesh::preferred_url()` returns just the base; we append
+            // `/chat` here. If the bundled controller failed to start and
+            // we fell back to senda.network, the public proxy redirects
+            // /chat → / (homepage) — acceptable degradation, but on Linux
+            // that used to be the *common* path because we looked for the
+            // controller next to /usr/bin instead of under /usr/lib/Senda.
             let base = mesh::preferred_url();
             let url = control_entry_url(&base);
             let parsed: tauri::Url = url

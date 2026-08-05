@@ -1,6 +1,6 @@
 [package]
 name = "senda-desktop"
-version = "0.1.129"
+version = "0.1.130"
 edition = "2021"
 description = "Cross-platform desktop shell for Senda — an open peer-to-peer mesh of contributed compute serving open-weight models."
 license = "MIT OR Apache-2.0"

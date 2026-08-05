@@ -188,12 +188,18 @@ fn find_node_binary() -> io::Result<PathBuf> {
     ))
 }
 
+/// Tauri `productName` from `tauri.conf.json`. On Linux the bundler
+/// installs resources under `/usr/lib/<productName>/` (and
+/// `$APPDIR/usr/lib/<productName>/` inside an AppImage). Must stay in
+/// sync with the conf — there is no compile-time bridge.
+const PRODUCT_NAME: &str = "Senda";
+
 /// Locate the staged Next.js controller bundle.
 ///
 /// Tauri exposes a `resource_dir()` helper, but it errors out in some
 /// run modes (notably `cargo run` against a debug bundle), so we resolve
 /// the path ourselves from `current_exe()`. The .app / .deb / .msi
-/// layouts are well-defined and stable.
+/// layouts are well-defined and stable — and they differ by OS.
 fn find_controller_dir() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let exe_dir = exe
@@ -213,8 +219,45 @@ fn find_controller_dir() -> io::Result<PathBuf> {
         }
     }
 
-    // Linux .deb / .AppImage and Windows .msi place resources in the same
-    // directory as the binary (Tauri's bundler convention).
+    // Linux .deb / AppImage: resources live under /usr/lib/<ProductName>/,
+    // NOT next to the binary in /usr/bin/. Looking next to the exe made
+    // every Linux install fail to spawn the controller and fall back to
+    // senda.network (the marketing site).
+    if cfg!(target_os = "linux") {
+        // AppImage: APPDIR points at the mounted squashfs root.
+        if let Ok(appdir) = std::env::var("APPDIR") {
+            let p = PathBuf::from(appdir)
+                .join("usr/lib")
+                .join(PRODUCT_NAME)
+                .join("sidecar")
+                .join("controller");
+            if p.join("server.js").is_file() {
+                return Ok(p);
+            }
+        }
+        // Installed .deb: /usr/lib/Senda/sidecar/controller
+        let deb = PathBuf::from("/usr/lib")
+            .join(PRODUCT_NAME)
+            .join("sidecar")
+            .join("controller");
+        if deb.join("server.js").is_file() {
+            return Ok(deb);
+        }
+        // `tauri build` output before packaging: target/.../senda next to
+        // ../lib/Senda/sidecar/controller
+        if let Some(lib) = exe_dir.parent().map(|d| {
+            d.join("lib")
+                .join(PRODUCT_NAME)
+                .join("sidecar")
+                .join("controller")
+        }) {
+            if lib.join("server.js").is_file() {
+                return Ok(lib);
+            }
+        }
+    }
+
+    // Windows .msi / portable co-locate resources with the binary.
     let next_to_exe = exe_dir.join("sidecar").join("controller");
     if next_to_exe.join("server.js").is_file() {
         return Ok(next_to_exe);
