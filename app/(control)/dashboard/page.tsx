@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../../components/PageHeader";
 import { Setup } from "../../components/Setup";
 import { type CatalogModel } from "../../lib/model-catalog";
+import { pickRecommendedModel } from "../../lib/recommended-model";
 import {
   getModelTier,
   SLA_TARGETS_BY_TIER,
@@ -809,8 +810,26 @@ export default function DashboardPage() {
   const running = isServiceRunning(control?.service) || meshConnected;
   const stopped = control?.service.state === "stopped" && !meshConnected;
 
-  const selfVram = selfNode?.capability.vramGb ?? selfNode?.vramGb ?? 0;
-  const selfBackend = selfNode?.capability.backend ?? "cpu";
+  // Hardware capability is only *known* once the runtime has joined the mesh
+  // and gossiped it. Defaulting the backend to "cpu" before then was actively
+  // harmful: `pickRecommendedModel` gates the daily-driver branch on
+  // `backend !== "cpu"`, so an unknown machine was indistinguishable from a
+  // GPU-less one and fell through to the 0.4 GB smoke test. Combined with the
+  // auto-quick-start below — which fired as soon as the *fast* local reads
+  // (`startup`, `localModels`) settled, racing ahead of mesh join and then
+  // latching `autoStartFired` — every fresh install could silently commit
+  // itself to serving Qwen3-0.6B regardless of hardware. That is how a 12.9 GB
+  // M1 Pro ended up as the mesh's only peer serving the smoke-test model
+  // (2026-08-11), with the advertised daily driver unroutable.
+  //
+  // `null` now means "not known yet", which is a different thing from "no GPU".
+  const capabilityKnown = selfNode !== null;
+  const selfVram = capabilityKnown
+    ? (selfNode?.capability.vramGb ?? selfNode?.vramGb ?? 0)
+    : null;
+  const selfBackend = capabilityKnown
+    ? (selfNode?.capability.backend ?? "cpu")
+    : null;
   const loadedHereRaw = selfNode?.capability.loadedModels ?? [];
   // Stability gate. The runtime's `hosted_models` flickers — it can briefly
   // contain a model name during a single poll while llama-server is in the
@@ -938,11 +957,18 @@ export default function DashboardPage() {
   const localModelIds = new Set((localModels ?? []).map((m) => m.id));
   const recommendation = pickRecommendedModel(catalog, selfVram, selfBackend);
 
-  // Auto-trigger the quick-start download on first launch. We wait until
-  // both `startup` and `localModels` are non-null (i.e. the initial data
-  // fetches have settled) before acting, so we don't fire during the brief
-  // loading window where everything looks unconfigured. Once the download
-  // begins the `autoStartFired` guard prevents re-triggering.
+  // Auto-trigger the quick-start download on first launch. Three things must
+  // have settled first, and the third is load-bearing:
+  //
+  //   1. `startup` and `localModels` — fast local reads, so this machine is
+  //      genuinely unconfigured rather than mid-fetch.
+  //   2. `control.available` — there is a runtime to talk to.
+  //   3. `recommendation` is non-null, which now *implies* hardware capability
+  //      is known (see `selfVram` / `selfBackend` above). Without this the
+  //      effect raced mesh join and latched the smoke-test model forever.
+  //
+  // `autoStartFired` is a one-way latch, so being wrong here is permanent for
+  // that install — hence gating on known hardware rather than a default.
   useEffect(() => {
     if (autoStartFired.current) return;
     if (!recommendation) return;
@@ -973,6 +999,17 @@ export default function DashboardPage() {
     loadedHere.length === 0 &&
     !startupConfigured &&
     !!recommendation;
+
+  // Same slot as the quick-start card, for the window where we'd otherwise
+  // have shown a recommendation derived from unknown hardware. Everything
+  // matches `showQuickStart` except that capability hasn't arrived yet.
+  const showDetectingHardware =
+    !!control &&
+    control.available &&
+    !control.publicDeployment &&
+    loadedHere.length === 0 &&
+    !startupConfigured &&
+    !capabilityKnown;
 
   if (control?.publicDeployment && !mesh.online && !mesh.loading) {
     return <PublicNoMesh />;
@@ -1050,6 +1087,11 @@ export default function DashboardPage() {
               onStart={() => runQuickStart(recommendation)}
             />
           )}
+
+          {/* Hardware not yet reported. Previously this window silently
+              recommended (and auto-downloaded) the smoke-test model; now we
+              say what we're waiting for instead of guessing wrong. */}
+          {showDetectingHardware && <DetectingHardwareCard />}
 
           {!showQuickStart &&
             !stopped &&
@@ -1857,40 +1899,6 @@ function MeshGlanceRow({
   );
 }
 
-/**
- * Pick a "first model" recommendation given the local node's reported
- * capacity. We bias toward something that'll actually run on the user's
- * hardware (no pointing a CPU-only laptop at a 72B model) while still
- * picking something useful enough that the chat feels real.
- *
- *   - 8 GB of VRAM/UMA + a real GPU backend → Qwen 3 8B (the demo model)
- *   - 4–8 GB or CPU-only on a fast machine → Phi-3 mini (cpuOk, 2.5 GB)
- *   - tiny / unknown → Qwen 3 0.6B smoke-test (cpuOk, 0.4 GB)
- *
- * Returns null only if the catalog is empty (shouldn't happen).
- */
-function pickRecommendedModel(
-  catalog: CatalogModel[],
-  vramGb: number,
-  backend: string,
-): CatalogModel | null {
-  const hasGpu = backend !== "cpu" && backend !== "" && backend !== "unknown";
-  const candidates = catalog.filter((m) => {
-    if (vramGb >= m.minVramGb) return true;
-    return m.cpuOk === true && vramGb === 0;
-  });
-  if (candidates.length === 0) return catalog[0] ?? null;
-
-  const eightB = candidates.find((m) => m.id === "Qwen3-8B-Q4_K_M");
-  if (eightB && vramGb >= eightB.minVramGb && hasGpu) return eightB;
-
-  const phi = candidates.find((m) => m.id === "Phi-3-mini-4k-Q4_K_M");
-  if (phi && vramGb >= phi.minVramGb) return phi;
-
-  const smokeTest = catalog.find((m) => m.id === "Qwen3-0.6B-Q4_K_M");
-  return smokeTest ?? candidates[0] ?? null;
-}
-
 function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -1943,6 +1951,74 @@ function quickStartExpectation(modelId: string): {
           "A small model — boots in seconds and decodes fast, but answers are lower quality than the 8B daily driver.",
       };
   }
+}
+
+/**
+ * Shown while the runtime hasn't yet reported what this machine can do.
+ *
+ * The honest alternative to guessing. Picking a model needs real VRAM and
+ * backend numbers, and those only arrive once the runtime joins the mesh — a
+ * few seconds on a warm install, longer on a cold one. Naming the wait is
+ * better than recommending a 0.4 GB smoke test to a 64 GB workstation and
+ * latching that choice permanently.
+ */
+function DetectingHardwareCard() {
+  // Capability arrives via mesh join, which can fail (no network, relay
+  // trouble). Without an escape hatch this card would spin forever and the
+  // user would have no way to start contributing at all — strictly worse than
+  // the wrong-model bug it replaces. After the grace period we stop implying
+  // it's imminent and point at the manual picker.
+  const [waitedTooLong, setWaitedTooLong] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setWaitedTooLong(true), 20_000);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  return (
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-elev)] p-6">
+      <div className="flex items-start gap-3">
+        <span
+          aria-hidden
+          className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+            waitedTooLong
+              ? "bg-[var(--fg-muted)]"
+              : "animate-pulse bg-[var(--accent)]"
+          }`}
+        />
+        <div className="min-w-0">
+          <h2 className="text-sm font-medium">
+            {waitedTooLong
+              ? "Still checking your hardware"
+              : "Checking your hardware…"}
+          </h2>
+          <p className="mt-1 max-w-xl text-[13px] leading-relaxed text-[var(--fg-muted)]">
+            {waitedTooLong ? (
+              <>
+                We haven&rsquo;t heard your GPU and memory numbers back yet, so we
+                won&rsquo;t guess at a model — a bad guess gets baked in. This
+                usually means the runtime hasn&rsquo;t reached the mesh yet. You
+                can wait, or pick a model yourself.
+              </>
+            ) : (
+              <>
+                Reading your GPU and available memory so we can recommend a model
+                that actually runs well here. This usually takes a few seconds
+                while the runtime starts up and joins the mesh.
+              </>
+            )}
+          </p>
+          {waitedTooLong && (
+            <Link
+              href="/models"
+              className="mt-3 inline-block text-[12px] font-medium text-[var(--accent)] hover:underline"
+            >
+              Choose a model yourself →
+            </Link>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function QuickStartCard({
