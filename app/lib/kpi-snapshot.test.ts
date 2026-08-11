@@ -137,6 +137,105 @@ describe("mergeWeekSnapshots", () => {
     expect(merged.node_count).toBe(5);
     expect(merged.models_available).toBe(1);
   });
+
+  test("keeps online true when the retained peak had peers", () => {
+    const peak = buildKpiSnapshot(
+      {
+        online: true,
+        nodeCount: 4,
+        models: ["Qwen3-8B-Q4_K_M"],
+        nodes: [
+          {
+            hostname: "LYU",
+            servingModels: ["Qwen3-8B-Q4_K_M"],
+            vramGb: 70.3,
+            capability: { backend: "cuda", vramGb: 70.3 },
+          },
+        ],
+      },
+      "Qwen3-8B-Q4_K_M",
+      "https://entry.senda.network/api/status",
+      new Date("2026-08-02T12:00:00Z"),
+      ["Qwen3-8B-Q4_K_M"],
+    );
+    const empty = buildKpiSnapshot(
+      { online: false, nodeCount: 0, models: [], nodes: [] },
+      "Qwen3-8B-Q4_K_M",
+      "https://entry.senda.network/api/status",
+      new Date("2026-08-02T23:00:00Z"),
+    );
+    const merged = mergeWeekSnapshots(peak, empty);
+    expect(merged.node_count).toBe(4);
+    expect(merged.online).toBe(true);
+  });
+});
+
+describe("through-mesh plausibility bound", () => {
+  const nodeWith = (
+    measuredTps: number,
+    nativeTps?: number,
+    measuredTtft = 1200,
+    nativeTtft?: number,
+  ) =>
+    buildKpiSnapshot(
+      {
+        online: true,
+        nodeCount: 1,
+        models: ["Qwen3-8B-Q4_K_M"],
+        nodes: [
+          {
+            hostname: "peer-a",
+            servingModels: ["Qwen3-8B-Q4_K_M"],
+            vramGb: 12.9,
+            capability: { backend: "metal", vramGb: 12.9 },
+            measuredTpsP50ByModel: { "Qwen3-8B-Q4_K_M": measuredTps },
+            measuredTtftMsP50ByModel: { "Qwen3-8B-Q4_K_M": measuredTtft },
+            ...(nativeTps !== undefined
+              ? { nativeTpsP50ByModel: { "Qwen3-8B-Q4_K_M": nativeTps } }
+              : {}),
+            ...(nativeTtft !== undefined
+              ? { nativeTtftMsP50ByModel: { "Qwen3-8B-Q4_K_M": nativeTtft } }
+              : {}),
+          },
+        ],
+      },
+      "Qwen3-8B-Q4_K_M",
+      "https://entry.senda.network/api/status",
+      new Date("2026-08-11T15:00:00Z"),
+      ["Qwen3-8B-Q4_K_M"],
+    );
+
+  test("drops through-mesh tps that beats the peer's native baseline", () => {
+    // The W31 shape: 487 tok/s recorded through the mesh on a peer whose own
+    // native baseline is 20 tok/s.
+    const snap = nodeWith(487.534, 20.196);
+    expect(snap.flagship.tps_p50_median).toBeNull();
+    expect(snap.flagship.tps_sample_count).toBe(0);
+  });
+
+  test("keeps through-mesh tps at or below the native baseline", () => {
+    const snap = nodeWith(11.888, 20.196);
+    expect(snap.flagship.tps_p50_median).toBeCloseTo(11.888, 3);
+    expect(snap.flagship.tps_sample_count).toBe(1);
+  });
+
+  test("passes values through when the peer gossips no native baseline", () => {
+    const snap = nodeWith(21.875);
+    expect(snap.flagship.tps_p50_median).toBeCloseTo(21.875, 3);
+    expect(snap.flagship.tps_sample_count).toBe(1);
+  });
+
+  test("drops through-mesh ttft faster than the native baseline", () => {
+    const snap = nodeWith(11.888, 20.196, 400, 2043);
+    expect(snap.flagship.ttft_ms_best).toBeNull();
+    expect(snap.flagship.ttft_sample_count).toBe(0);
+  });
+
+  test("keeps through-mesh ttft at or above the native baseline", () => {
+    const snap = nodeWith(11.888, 20.196, 20959, 2043);
+    expect(snap.flagship.ttft_ms_best).toBe(20959);
+    expect(snap.flagship.ttft_sample_count).toBe(1);
+  });
 });
 
 describe("pickFlagshipModel", () => {

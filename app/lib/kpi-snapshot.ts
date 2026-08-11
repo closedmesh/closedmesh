@@ -50,6 +50,9 @@ export type KpiStatusNode = {
   };
   measuredTpsP50ByModel?: Record<string, number>;
   measuredTtftMsP50ByModel?: Record<string, number>;
+  /** Phase 3.0 native baselines — used only as a plausibility bound. */
+  nativeTpsP50ByModel?: Record<string, number>;
+  nativeTtftMsP50ByModel?: Record<string, number>;
 };
 
 export type KpiStatusInput = {
@@ -72,6 +75,13 @@ export type MeshRuntimePeer = {
   models?: string[];
   measured_tps_p50_by_model?: Record<string, number>;
   measured_ttft_ms_p50_by_model?: Record<string, number>;
+  /**
+   * Phase 3.0 (runtime >= v0.66.49) native baselines, measured straight against
+   * the peer's own llama-server with no mesh in the path. Bounds the
+   * `measured_*` (through-mesh) numbers above.
+   */
+  native_tps_p50_by_model?: Record<string, number>;
+  native_ttft_ms_p50_by_model?: Record<string, number>;
   /** Phase 3.2 / 5.B — latest synthetic-probe verdicts (observe-mode). */
   verify_by_model?: Record<
     string,
@@ -157,6 +167,8 @@ export function meshRuntimeToKpiInput(body: MeshRuntimeStatus): KpiStatusInput {
         },
         measuredTpsP50ByModel: peer.measured_tps_p50_by_model,
         measuredTtftMsP50ByModel: peer.measured_ttft_ms_p50_by_model,
+        nativeTpsP50ByModel: peer.native_tps_p50_by_model,
+        nativeTtftMsP50ByModel: peer.native_ttft_ms_p50_by_model,
       };
     });
 
@@ -171,6 +183,44 @@ export function meshRuntimeToKpiInput(body: MeshRuntimeStatus): KpiStatusInput {
 function servesModel(node: KpiStatusNode, model: string): boolean {
   const loaded = node.capability?.loadedModels ?? [];
   return node.servingModels.includes(model) || loaded.includes(model);
+}
+
+/**
+ * Through-mesh numbers are physically bounded by the same peer's native
+ * baseline: the mesh adds a tunnel + routing hop, so it can never decode
+ * faster (or reach first token sooner) than the peer does talking straight to
+ * its own llama-server. A `measured_*` value that beats `native_*` is a bad
+ * sample, not a record — and because `mergeWeekSnapshots` keeps peaks, one bad
+ * sample would otherwise latch for the whole week (W31 recorded 487 tok/s on
+ * Qwen3-8B this way). Uses the peer's own native value as the bound rather than
+ * a fixed ceiling, so it scales with model size and hardware. Peers that
+ * gossip no native baseline (legacy <= v0.66.48, or no baseline run yet) have
+ * no basis for rejection and pass through unchanged.
+ */
+function plausibleThroughMeshTps(
+  node: KpiStatusNode,
+  model: string,
+): number | undefined {
+  const measured = node.measuredTpsP50ByModel?.[model];
+  if (typeof measured !== "number") return undefined;
+  const native = node.nativeTpsP50ByModel?.[model];
+  if (typeof native === "number" && native > 0 && measured > native) {
+    return undefined;
+  }
+  return measured;
+}
+
+function plausibleThroughMeshTtftMs(
+  node: KpiStatusNode,
+  model: string,
+): number | undefined {
+  const measured = node.measuredTtftMsP50ByModel?.[model];
+  if (typeof measured !== "number") return undefined;
+  const native = node.nativeTtftMsP50ByModel?.[model];
+  if (typeof native === "number" && native > 0 && measured < native) {
+    return undefined;
+  }
+  return measured;
 }
 
 function median(values: number[]): number | null {
@@ -227,10 +277,16 @@ export function mergeWeekSnapshots(
     ...(next.routable_models ?? []),
   ]);
 
+  const nodeCount = Math.max(prev.node_count, next.node_count);
+
   return {
     ...next,
     captured_at: next.captured_at,
-    node_count: Math.max(prev.node_count, next.node_count),
+    // `online` must agree with the peak it is reported next to. Taking it from
+    // `next` alone produced rollups reading `online: false` with
+    // `node_count: 4` (W31, W32) — a peak week that claims the mesh was down.
+    online: nodeCount > 0 ? prev.online || next.online : next.online,
+    node_count: nodeCount,
     pooled_vram_gb: Math.max(prev.pooled_vram_gb, next.pooled_vram_gb),
     models_available: Math.max(prev.models_available, next.models_available),
     routable_models: routable,
@@ -306,11 +362,11 @@ export function buildKpiSnapshot(
   );
 
   const tpsVals = status.nodes
-    .map((n) => n.measuredTpsP50ByModel?.[flagshipModel])
+    .map((n) => plausibleThroughMeshTps(n, flagshipModel))
     .filter((v): v is number => typeof v === "number" && v > 0);
 
   const ttftVals = status.nodes
-    .map((n) => n.measuredTtftMsP50ByModel?.[flagshipModel])
+    .map((n) => plausibleThroughMeshTtftMs(n, flagshipModel))
     .filter((v): v is number => typeof v === "number" && v > 0);
 
   const backends = [
