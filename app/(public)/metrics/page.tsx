@@ -11,6 +11,10 @@ import {
   snapshotQuality,
 } from "../../lib/kpi-snapshot";
 import type { NodeSummary } from "../../lib/use-mesh-status";
+import type {
+  MarginPathWindow,
+  MarginWindow,
+} from "../../lib/margin-accounting";
 
 type MeshShareWindow = {
   hours: number;
@@ -31,6 +35,10 @@ type KpiDashboard = {
   meshShare?: {
     rolling24h: MeshShareWindow;
     rolling7d: MeshShareWindow;
+  };
+  margin?: {
+    rolling24h: MarginWindow;
+    rolling7d: MarginWindow;
   };
 };
 
@@ -153,6 +161,161 @@ function MilestoneCard({ m }: { m: KpiMilestone }) {
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** micro-USD → "$0.0123" with enough precision for per-request amounts. */
+function fmtUsdMicros(micros: number | null): string {
+  if (micros == null) return "—";
+  const usd = micros / 1_000_000;
+  const abs = Math.abs(usd);
+  const digits = abs === 0 ? 2 : abs < 0.01 ? 5 : abs < 1 ? 4 : 2;
+  return `${usd < 0 ? "-" : ""}$${Math.abs(usd).toFixed(digits)}`;
+}
+
+function fmtPct(pct: number | null): string {
+  return pct == null ? "—" : `${pct.toFixed(1)}%`;
+}
+
+/**
+ * Phase 5 exit gate 5 — gross margin per request, broken out by `served_by`.
+ *
+ * The point of the breakout is that the two paths have structurally different
+ * economics: a mesh serve pays a contributor, a fallback serve pays an external
+ * provider. Showing only a blended number would hide the single lever
+ * (`mesh_share_pct`) that moves it.
+ */
+function MarginPanel({
+  margin,
+}: {
+  margin: { rolling24h: MarginWindow; rolling7d: MarginWindow };
+}) {
+  const { rolling24h, rolling7d } = margin;
+  const hasData =
+    rolling24h.total.requests > 0 || rolling7d.total.requests > 0;
+
+  return (
+    <section className="mb-10">
+      <div className="mb-3 flex items-baseline justify-between gap-2">
+        <h2 className="text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
+          Gross margin
+        </h2>
+        <span className="text-[10px] uppercase tracking-[0.14em] text-[var(--fg-muted)]">
+          per request, by served_by
+        </span>
+      </div>
+      {!hasData ? (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] px-4 py-4 text-[12px] text-[var(--fg-muted)]">
+          No paid requests in the rolling window yet. When there are, this shows
+          revenue minus cost of goods for each path — a mesh serve&rsquo;s cost is
+          the contributor payout, a fallback serve&rsquo;s cost is what we pay an
+          external provider.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <MarginWindowCard label="Last 24 hours" window={rolling24h} />
+          <MarginWindowCard label="Last 7 days" window={rolling7d} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MarginWindowCard({
+  label,
+  window,
+}: {
+  label: string;
+  window: MarginWindow;
+}) {
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-elev)] p-4">
+      <div className="mb-3 flex items-baseline justify-between gap-2">
+        <span className="text-[12px] font-medium">{label}</span>
+        <span className="text-[11px] text-[var(--fg-muted)]">
+          {window.total.requests} request
+          {window.total.requests === 1 ? "" : "s"} ·{" "}
+          {fmtUsdMicros(window.total.margin_usd_micros)} margin ·{" "}
+          {fmtPct(window.total.margin_pct)}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[30rem] text-left text-[12px]">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-[0.12em] text-[var(--fg-muted)]">
+              <th className="pb-2 font-normal">Path</th>
+              <th className="pb-2 text-right font-normal">Requests</th>
+              <th className="pb-2 text-right font-normal">Revenue</th>
+              <th className="pb-2 text-right font-normal">Cost</th>
+              <th className="pb-2 text-right font-normal">Margin/req</th>
+              <th className="pb-2 text-right font-normal">Margin %</th>
+            </tr>
+          </thead>
+          <tbody>
+            <MarginRow
+              name="Mesh"
+              hint="pays a contributor"
+              path={window.mesh}
+            />
+            <MarginRow
+              name="Fallback"
+              hint="pays an external provider"
+              path={window.fallback}
+            />
+            <MarginRow name="Total" path={window.total} emphasis />
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MarginRow({
+  name,
+  hint,
+  path,
+  emphasis,
+}: {
+  name: string;
+  hint?: string;
+  path: MarginPathWindow;
+  emphasis?: boolean;
+}) {
+  const negative = path.margin_usd_micros < 0;
+  return (
+    <tr
+      className={
+        emphasis
+          ? "border-t border-[var(--border)] font-medium"
+          : "text-[var(--fg-muted)]"
+      }
+    >
+      <td className={emphasis ? "py-2" : "py-2"}>
+        <span className={emphasis ? "" : "text-[var(--fg)]"}>{name}</span>
+        {hint && (
+          <span className="ml-1.5 text-[10px] text-[var(--fg-muted)]">
+            — {hint}
+          </span>
+        )}
+      </td>
+      <td className="py-2 text-right tabular-nums">{path.requests}</td>
+      <td className="py-2 text-right tabular-nums">
+        {fmtUsdMicros(path.revenue_usd_micros)}
+      </td>
+      <td className="py-2 text-right tabular-nums">
+        {fmtUsdMicros(path.cost_usd_micros)}
+      </td>
+      <td
+        className={`py-2 text-right tabular-nums ${negative ? "text-red-400" : ""}`}
+      >
+        {fmtUsdMicros(path.margin_per_request_usd_micros)}
+      </td>
+      <td
+        className={`py-2 text-right tabular-nums ${negative ? "text-red-400" : ""}`}
+      >
+        {fmtPct(path.margin_pct)}
+      </td>
+    </tr>
   );
 }
 
@@ -417,6 +580,12 @@ export default function MetricsPage() {
         {/* Mesh share — the headline routable-network KPI */}
         {dashboard?.meshShare ? (
           <MeshSharePanel meshShare={dashboard.meshShare} />
+        ) : null}
+
+        {/* Gross margin — Phase 5 exit gate 5. Sits directly under mesh share
+            because mesh_share_pct is the lever that moves it. */}
+        {dashboard?.margin ? (
+          <MarginPanel margin={dashboard.margin} />
         ) : null}
 
         <SettlementPanel />

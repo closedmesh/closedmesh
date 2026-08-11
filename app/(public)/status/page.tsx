@@ -9,6 +9,10 @@ import { nodeLooksServingButUndialable } from "../../lib/node-entry-dialability"
 import { MODEL_CATALOG, type CatalogModel } from "../../lib/model-catalog";
 import { modelIdsMatch } from "../../lib/model-id";
 import {
+  MESH_HEALTH_REASON_COPY,
+  type MeshHealth,
+} from "../../lib/mesh-health";
+import {
   getModelTier,
   tierRank,
   TIER_LABELS,
@@ -1554,10 +1558,80 @@ type NodeHistory = {
   everUseful: boolean;
 };
 
+/**
+ * Supply health banner.
+ *
+ * Says plainly when the mesh can't serve the model the site advertises as its
+ * default, and for how long. The honest framing matters here: a visitor reading
+ * `/status` should learn this from us rather than by sending a prompt and
+ * getting nothing, and W33 (three weeks of quiet decline) is exactly the case
+ * where a page full of green cards would have been misleading.
+ */
+function SupplyHealthBanner({ health }: { health: MeshHealth }) {
+  if (health.level === "ok") return null;
+
+  const down = health.level === "down";
+  const tone = down
+    ? {
+        border: "border-red-500/25",
+        bg: "bg-red-500/5",
+        fg: "text-red-400",
+        label: "Mesh unable to serve",
+      }
+    : {
+        border: "border-amber-500/25",
+        bg: "bg-amber-500/5",
+        fg: "text-amber-400",
+        label: "Reduced capacity",
+      };
+
+  const duration =
+    health.degraded_hours >= 48
+      ? `${Math.floor(health.degraded_hours / 24)} days`
+      : health.degraded_hours >= 1
+        ? `${health.degraded_hours} hour${health.degraded_hours === 1 ? "" : "s"}`
+        : null;
+
+  return (
+    <div className={`rounded-xl border ${tone.border} ${tone.bg} p-4`}>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className={`text-sm font-medium ${tone.fg}`}>{tone.label}</span>
+        {duration && (
+          <span className="text-[12px] text-[var(--fg-muted)]">
+            for the past {duration}
+          </span>
+        )}
+      </div>
+      <ul className="mt-2 space-y-1 text-[12px] text-[var(--fg-muted)]">
+        {health.reasons.map((reason) => (
+          <li key={reason}>{MESH_HEALTH_REASON_COPY[reason]}</li>
+        ))}
+      </ul>
+      {health.routable_models.length > 0 && (
+        <div className="mt-2 text-[12px] text-[var(--fg-muted)]">
+          Routable right now:{" "}
+          <span className="text-[var(--fg)]">
+            {health.routable_models.join(", ")}
+          </span>
+          .
+        </div>
+      )}
+      <div className="mt-2 text-[12px] text-[var(--fg-muted)]">
+        Capacity comes from volunteered hardware, so it moves with who is
+        online.{" "}
+        <Link href="/contribute" className="underline hover:text-[var(--fg)]">
+          Run a peer →
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 export default function StatusPage() {
   const [status, setStatus] = useState<MeshStatus | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState(false);
+  const [health, setHealth] = useState<MeshHealth | null>(null);
   const historyRef = useRef<Map<string, NodeHistory>>(new Map());
   // Most recent snapshot we saw for each node id. Lets us keep rendering
   // a node for ~30s after it vanishes from the entry node's view, so a
@@ -1638,6 +1712,38 @@ export default function StatusPage() {
     }
 
     tick();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, []);
+
+  // Supply health is written by the hourly KPI cron, so it needs nowhere near
+  // the 5s cadence of the live status poll. Kept as its own fetch rather than
+  // folded into /api/status: that endpoint is hit on every poll by every
+  // viewer, and this doesn't need to ride along.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+
+    async function tickHealth() {
+      try {
+        const res = await fetch("/api/kpi-snapshot?health=1", {
+          cache: "no-store",
+        });
+        // 503 just means no capture has run yet — not an error worth showing.
+        if (res.ok) {
+          const data = (await res.json()) as { health?: MeshHealth };
+          if (!cancelled && data.health) setHealth(data.health);
+        }
+      } catch {
+        /* health is advisory; a failed read shouldn't disturb the page */
+      } finally {
+        if (!cancelled) timer = window.setTimeout(tickHealth, 300_000);
+      }
+    }
+
+    tickHealth();
     return () => {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
@@ -1859,6 +1965,14 @@ export default function StatusPage() {
             <div className="mt-1 text-[12px] text-[var(--fg-muted)]">
               Could not reach the entry node. Retrying automatically.
             </div>
+          </div>
+        )}
+
+        {/* Supply health — above the cards, so a degraded mesh isn't buried
+            under a page of otherwise-green detail. */}
+        {health && (
+          <div className="mb-6">
+            <SupplyHealthBanner health={health} />
           </div>
         )}
 

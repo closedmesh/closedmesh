@@ -7,6 +7,7 @@
  * Read (no auth): GET /api/kpi-snapshot?week=2026-W21
  *                 GET /api/kpi-snapshot?latest=1
  *                 GET /api/kpi-snapshot?dashboard=1
+ *                 GET /api/kpi-snapshot?health=1   ← live supply health
  */
 
 import { NextResponse } from "next/server";
@@ -22,9 +23,11 @@ import {
   getKpiDashboard,
   getKpiLatestWeek,
   getKpiWeek,
+  getMeshHealth,
   kpiStoreReady,
   saveKpiSnapshot,
 } from "../../lib/kpi-store";
+import { describeMeshHealth } from "../../lib/mesh-health";
 import { ingestVerificationFromPeers } from "../../lib/verification-receipts";
 
 export const runtime = "nodejs";
@@ -122,11 +125,21 @@ async function captureSnapshot(flagshipParam?: string | null) {
   const saved = await saveKpiSnapshot(snapshot, new Date(), { hostHostname });
   // Phase 5.B observe: persist synthetic-probe verdicts + reputation grades.
   const verifyIngest = await ingestVerificationFromPeers(raw.peers ?? []);
+
+  // Supply health goes in the cron response (and the Vercel cron log) so a
+  // degraded mesh is visible without anyone opening a dashboard.
+  const health = saved.health;
+  if (health && health.level !== "ok") {
+    console.warn(`[kpi-snapshot] ${describeMeshHealth(health)}`);
+  }
+
   return {
     snapshot,
     saved,
     storeReady: kpiStoreReady(),
     verifyIngest,
+    health,
+    healthSummary: health ? describeMeshHealth(health) : null,
   };
 }
 
@@ -136,6 +149,7 @@ export async function GET(req: Request) {
   const latest = url.searchParams.get("latest");
   const dashboard = url.searchParams.get("dashboard");
   const seed = url.searchParams.get("seed");
+  const health = url.searchParams.get("health");
 
   // Idempotent milestone backfill (cron or manual with secret).
   if (seed === "milestones" && cronAuthorized(req)) {
@@ -162,6 +176,22 @@ export async function GET(req: Request) {
     }
   }
 
+  // Read-only supply health. Deliberately unauthenticated and cheap: it is the
+  // thing you want to be able to check from anywhere, fast.
+  if (health === "1" || health === "true") {
+    const current = await getMeshHealth();
+    if (!current) {
+      return NextResponse.json(
+        { error: "no health check recorded yet", storeReady: kpiStoreReady() },
+        { status: 503 },
+      );
+    }
+    return NextResponse.json({
+      health: current,
+      summary: describeMeshHealth(current),
+    });
+  }
+
   if (dashboard === "1" || dashboard === "true") {
     if (kpiStoreReady()) {
       await ensureKnownMilestones();
@@ -180,6 +210,7 @@ export async function GET(req: Request) {
         read_week: "?week=2026-W21",
         read_latest: "?latest=1",
         dashboard: "?dashboard=1",
+        health: "?health=1 (live supply health, no auth)",
         seed_milestones: "?seed=milestones (auth required)",
       },
       storeReady: kpiStoreReady(),

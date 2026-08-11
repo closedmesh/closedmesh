@@ -11,6 +11,7 @@ import {
 } from "../../../../lib/credits-ledger";
 import { evaluateSla, fetchMeshPeersCached } from "../../../../lib/routing-sla";
 import { recordServedByDecision } from "../../../../lib/mesh-share";
+import { recordRequestMargin } from "../../../../lib/margin-accounting";
 import { decideFallback } from "../../../../lib/fallback-provider";
 import {
   customerStoreReady,
@@ -401,6 +402,15 @@ export async function POST(req: Request) {
           }),
         );
       }
+      // Phase 5 gate 5: persist realised margin by served_by. Fire-and-forget.
+      void recordRequestMargin({
+        servedBy,
+        modelId,
+        promptTokens: usage.promptTokens || promptEstimate,
+        completionTokens: usage.completionTokens,
+        chargedMicros: result.charged,
+        underpaid: result.underpaid,
+      });
       await finalizeMeshAccrual({
         promptTokens: usage.promptTokens || promptEstimate,
         completionTokens: usage.completionTokens,
@@ -453,6 +463,15 @@ export async function POST(req: Request) {
       completionTokens: finalUsage.completionTokens,
     });
     const result = await finishSettle(charged);
+    // Phase 5 gate 5: persist realised margin by served_by. Fire-and-forget.
+    void recordRequestMargin({
+      servedBy,
+      modelId,
+      promptTokens: finalUsage.promptTokens,
+      completionTokens: finalUsage.completionTokens,
+      chargedMicros: result.charged,
+      underpaid: result.underpaid,
+    });
     await finalizeMeshAccrual({
       promptTokens: finalUsage.promptTokens,
       completionTokens: finalUsage.completionTokens,

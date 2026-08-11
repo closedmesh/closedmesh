@@ -20,6 +20,17 @@ import {
   snapshotQuality,
 } from "./kpi-snapshot";
 import { getMeshShareRolling, type MeshShareWindow } from "./mesh-share";
+import {
+  emptyMarginWindow,
+  getMarginRolling,
+  type MarginWindow,
+} from "./margin-accounting";
+import {
+  evaluateMeshHealth,
+  MESH_HEALTH_KEY,
+  MESH_HEALTH_TTL_SEC,
+  type MeshHealth,
+} from "./mesh-health";
 
 export async function saveKpiSnapshot(
   snapshot: KpiSnapshot,
@@ -31,6 +42,7 @@ export async function saveKpiSnapshot(
   backend: "redis" | "none";
   weekMerged: boolean;
   milestoneAdded: string | null;
+  health: MeshHealth | null;
 }> {
   const hourKey = kpiHourKey(at);
   const weekKey = kpiWeekKey(at);
@@ -42,6 +54,7 @@ export async function saveKpiSnapshot(
       backend: "none",
       weekMerged: false,
       milestoneAdded: null,
+      health: null,
     };
   }
 
@@ -60,6 +73,15 @@ export async function saveKpiSnapshot(
     );
   }
 
+  // Health is evaluated against the live capture, never `mergedWeek` — the
+  // week rollup keeps peaks, so it would report a healthy mesh all week on the
+  // strength of one good hour.
+  const priorHealth = await redis.get<MeshHealth>(MESH_HEALTH_KEY);
+  const health = evaluateMeshHealth(snapshot, priorHealth, at);
+  writes.push(
+    redis.set(MESH_HEALTH_KEY, health, { ex: MESH_HEALTH_TTL_SEC }),
+  );
+
   await Promise.all(writes);
 
   const milestoneAdded = await recordMilestones(snapshot, opts?.hostHostname);
@@ -70,7 +92,14 @@ export async function saveKpiSnapshot(
     backend: "redis",
     weekMerged: !!existingWeek && mergedWeek !== snapshot,
     milestoneAdded,
+    health,
   };
+}
+
+export async function getMeshHealth(): Promise<MeshHealth | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  return redis.get<MeshHealth>(MESH_HEALTH_KEY);
 }
 
 async function recordMilestones(
@@ -188,6 +217,13 @@ export type KpiDashboardPayload = {
     rolling24h: MeshShareWindow;
     rolling7d: MeshShareWindow;
   };
+  /** Live supply health from the most recent capture; null before first cron. */
+  health: MeshHealth | null;
+  /** Phase 5 gate 5 — realised gross margin broken out by `served_by`. */
+  margin: {
+    rolling24h: MarginWindow;
+    rolling7d: MarginWindow;
+  };
 };
 
 export async function getKpiDashboard(
@@ -209,18 +245,35 @@ export async function getKpiDashboard(
         rolling24h: { hours: 24, mesh: 0, fallback: 0, pct: null },
         rolling7d: { hours: 168, mesh: 0, fallback: 0, pct: null },
       },
+      health: null,
+      margin: {
+        rolling24h: emptyMarginWindow(24),
+        rolling7d: emptyMarginWindow(168),
+      },
     };
   }
 
-  const [latest, previous, lastGood, milestones, rolling24h, rolling7d] =
-    await Promise.all([
-      getKpiWeek(week),
-      getKpiWeek(previousWeek),
-      getKpiLastGood(),
-      getKpiMilestones(),
-      getMeshShareRolling(24, at),
-      getMeshShareRolling(168, at),
-    ]);
+  const [
+    latest,
+    previous,
+    lastGood,
+    milestones,
+    rolling24h,
+    rolling7d,
+    health,
+    margin24h,
+    margin7d,
+  ] = await Promise.all([
+    getKpiWeek(week),
+    getKpiWeek(previousWeek),
+    getKpiLastGood(),
+    getKpiMilestones(),
+    getMeshShareRolling(24, at),
+    getMeshShareRolling(168, at),
+    getMeshHealth(),
+    getMarginRolling(24, at),
+    getMarginRolling(168, at),
+  ]);
 
   return {
     storeReady: true,
@@ -231,5 +284,7 @@ export async function getKpiDashboard(
     lastGood,
     milestones,
     meshShare: { rolling24h, rolling7d },
+    health,
+    margin: { rolling24h: margin24h, rolling7d: margin7d },
   };
 }
