@@ -27,6 +27,7 @@ import {
 } from "./margin-accounting";
 import {
   evaluateMeshHealth,
+  normalizeMeshHealth,
   MESH_HEALTH_KEY,
   MESH_HEALTH_TTL_SEC,
   type MeshHealth,
@@ -99,7 +100,9 @@ export async function saveKpiSnapshot(
 export async function getMeshHealth(): Promise<MeshHealth | null> {
   const redis = getRedis();
   if (!redis) return null;
-  return redis.get<MeshHealth>(MESH_HEALTH_KEY);
+  const stored = await redis.get<MeshHealth>(MESH_HEALTH_KEY);
+  // Records written before `flagship_ready_contributors` existed lack it.
+  return stored ? normalizeMeshHealth(stored) : null;
 }
 
 async function recordMilestones(

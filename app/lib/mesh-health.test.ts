@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   describeMeshHealth,
   evaluateMeshHealth,
+  normalizeMeshHealth,
   type MeshHealth,
 } from "./mesh-health";
 import type { KpiSnapshot } from "./kpi-snapshot";
@@ -217,6 +218,46 @@ describe("degraded run tracking", () => {
     const again = degraded(AT, recovered);
     expect(again.degraded_since).toBe(AT.toISOString());
     expect(again.degraded_hours).toBe(0);
+  });
+});
+
+describe("stored records missing ready_contributors", () => {
+  // The exact record served from Redis at 2026-08-12T06:03:08Z, written before
+  // the field existed. Rendering it produced "undefined peer(s) serving".
+  const legacyStored = {
+    level: "ok",
+    checked_at: "2026-08-12T06:03:08.072Z",
+    degraded_since: null,
+    degraded_hours: 0,
+    reasons: [],
+    flagship_model: "Qwen3-8B-Q4_K_M",
+    flagship_routable: true,
+    flagship_contributors: 1,
+    routable_models: ["Qwen3-8B-Q4_K_M"],
+    node_count: 4,
+  } as unknown as MeshHealth;
+
+  test("summary never renders undefined", () => {
+    const text = describeMeshHealth(legacyStored);
+    expect(text).not.toContain("undefined");
+    expect(text).toContain("1 peer(s) serving Qwen3-8B-Q4_K_M");
+  });
+
+  test("normalize backfills ready from contributors", () => {
+    expect(normalizeMeshHealth(legacyStored).flagship_ready_contributors).toBe(1);
+  });
+
+  test("never emits a negative warming count", () => {
+    const odd = {
+      ...legacyStored,
+      flagship_contributors: 1,
+      flagship_ready_contributors: 3,
+    } as MeshHealth;
+    const text = describeMeshHealth(odd);
+    // The model id legitimately contains hyphens, so assert on the note itself.
+    expect(text).not.toMatch(/-\d+ more loading/);
+    expect(text).not.toContain("loading");
+    expect(text).toContain("3 peer(s) serving");
   });
 });
 

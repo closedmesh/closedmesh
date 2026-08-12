@@ -131,11 +131,29 @@ export function evaluateMeshHealth(
   };
 }
 
+/**
+ * Records persisted before `flagship_ready_contributors` existed read back from
+ * Redis without it. Normalize on read — rendering a stored record straight from
+ * the store produced "undefined peer(s) serving" on the live endpoint.
+ */
+export function normalizeMeshHealth(health: MeshHealth): MeshHealth {
+  return {
+    ...health,
+    flagship_ready_contributors:
+      health.flagship_ready_contributors ?? health.flagship_contributors ?? 0,
+    flagship_contributors: health.flagship_contributors ?? 0,
+    reasons: health.reasons ?? [],
+  };
+}
+
 /** One-line summary for logs, the cron response, and the `/status` banner. */
-export function describeMeshHealth(health: MeshHealth): string {
+export function describeMeshHealth(input: MeshHealth): string {
+  const health = normalizeMeshHealth(input);
   if (health.level === "ok") {
     const ready = health.flagship_ready_contributors;
-    const warming = health.flagship_contributors - ready;
+    // Clamp: a stored record could carry ready > contributors across a schema
+    // change, and "-1 more loading" is worse than saying nothing.
+    const warming = Math.max(0, health.flagship_contributors - ready);
     const warmingNote = warming > 0 ? ` (${warming} more loading)` : "";
     return `Mesh healthy — ${ready} peer(s) serving ${health.flagship_model}${warmingNote}.`;
   }
