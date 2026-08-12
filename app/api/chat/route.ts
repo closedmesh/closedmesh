@@ -3,7 +3,9 @@ import { convertToModelMessages, streamText, type UIMessage } from "ai";
 import { applyCors, preflightResponse } from "../_cors";
 import {
   DEFAULT_DAILY_DRIVER_MODEL,
+  getModelTier,
   pickDefaultModelByTier,
+  SLA_TARGETS_BY_TIER,
 } from "../../lib/model-tiers";
 import { evaluateSla, fetchMeshPeersCached } from "../../lib/routing-sla";
 import {
@@ -23,6 +25,39 @@ import type { SlaEvaluation } from "../../lib/routing-sla";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
+
+/**
+ * Idle watchdog for the free chat stream.
+ *
+ * Observed in production 2026-08-12: a request emitted `{"type":"start"}` and
+ * then nothing — no token, no error, no terminator — for 90 s and counting. It
+ * coincided with a peer transitioning `loading` → `serving`, which black-holed
+ * the in-flight request. With `maxDuration = 300` and no idle guard, a visitor
+ * watches an empty chat for up to five minutes and never learns anything went
+ * wrong. That is far worse than an honest error.
+ *
+ * The paid `/v1` route already guards its raw upstream reader with
+ * `withIdleTimeout`; the free route streams through the AI SDK, so the
+ * equivalent is an `abortSignal` refreshed on every chunk.
+ *
+ * The budget is derived from the tier's own advertised TTFT target rather than a
+ * magic constant, so a capacity-tier model that legitimately takes 15 s to first
+ * token is not cut off. Floored so a fast tier still gets a humane grace period.
+ */
+const STREAM_IDLE_FLOOR_MS = 30_000;
+const STREAM_IDLE_TTFT_MULTIPLE = 6;
+
+export function streamIdleBudgetMs(modelId: string): number {
+  const target = SLA_TARGETS_BY_TIER[getModelTier(modelId)].target_ttft_ms_p50;
+  return Math.max(STREAM_IDLE_FLOOR_MS, target * STREAM_IDLE_TTFT_MULTIPLE);
+}
+
+class ChatStreamStalledError extends Error {
+  constructor(idleMs: number) {
+    super(`chat stream stalled: no output for ${idleMs}ms`);
+    this.name = "ChatStreamStalledError";
+  }
+}
 
 // `.trim()` defensively against env values like `"https://…/v1\n"` — Vercel
 // has burned us once already on `NEXT_PUBLIC_DEPLOYMENT="public\n"` and we
@@ -412,6 +447,35 @@ export async function POST(req: Request) {
   // chunk format is identical to the caller. The chat UI does not
   // need to know whether it got mesh or fallback — only the
   // headers and `/metrics` distinguish them.
+  // Watchdog armed *before* the first token, since the observed hang was
+  // pre-first-token. Every chunk refreshes it; abort surfaces through `onError`
+  // as a real stream error instead of silence.
+  const idleMs = streamIdleBudgetMs(modelId);
+  const stallController = new AbortController();
+  let stalled = false;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = undefined;
+  };
+  const bumpIdle = () => {
+    clearIdle();
+    idleTimer = setTimeout(() => {
+      stalled = true;
+      stallController.abort(new ChatStreamStalledError(idleMs));
+    }, idleMs);
+    // Never let a pending watchdog hold the serverless invocation open past a
+    // completed stream. Aborting an already-settled stream is a no-op, so the
+    // only thing worth guarding against is the timer itself keeping us alive.
+    idleTimer?.unref?.();
+  };
+  bumpIdle();
+  const streamGuards = {
+    abortSignal: stallController.signal,
+    onChunk: () => bumpIdle(),
+    onAbort: () => clearIdle(),
+  };
+
   let result;
   if (decision.useFallback) {
     const provider = getOpenRouterProvider();
@@ -431,6 +495,7 @@ export async function POST(req: Request) {
         system: SYSTEM_PROMPT,
         messages: convertToModelMessages(parsed.body.messages),
         maxRetries: 0,
+        ...streamGuards,
         ...meshCreditOnFinish(meshCredits, sla, modelId, servingAttribution),
       });
     } else {
@@ -439,6 +504,7 @@ export async function POST(req: Request) {
         system: SYSTEM_PROMPT,
         messages: convertToModelMessages(parsed.body.messages),
         maxRetries: 1,
+        ...streamGuards,
       });
     }
   } else {
@@ -454,6 +520,7 @@ export async function POST(req: Request) {
       // 429 and confusing the actual diagnosis. One attempt; let the user
       // (or chat UI) decide whether to retry.
       maxRetries: 0,
+      ...streamGuards,
       ...creditOnFinish,
     });
   }
@@ -467,6 +534,15 @@ export async function POST(req: Request) {
   // (a slow serve beats no serve), so we only override for the genuine
   // no-host case, not for degraded-but-serving peers.
   const onError = (error: unknown): string => {
+    clearIdle();
+    // A stalled stream is its own failure mode and deserves its own message.
+    // Checked before the no-host case: a stall means a peer accepted the
+    // request and then went quiet, which is not the same as having no peer.
+    if (stalled) {
+      return `The contributor serving ${modelId} stopped responding mid-request (no output for ${Math.round(
+        idleMs / 1000,
+      )}s). This usually means a peer dropped off or is still loading the model — try again, or see senda.network/status.`;
+    }
     if (!decision.useFallback && sla.candidatePeerCount === 0) {
       return `No contributor is currently serving ${modelId} on the mesh right now. A peer needs to load and share it before requests can be served — see senda.network/status.`;
     }
