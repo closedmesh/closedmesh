@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  consumeFallbackBudget,
   decideFallback,
   fallbackAvailableFor,
+  fallbackDailySpendCapMicros,
+  fallbackGlobalHourlyMax,
   fallbackKeyConfigured,
+  fallbackSpendTodayMicros,
   mapModelIdForFallback,
+  recordFallbackSpend,
 } from "./fallback-provider";
+import { USD_MICROS } from "./rate-card";
 import type { SlaEvaluation } from "./routing-sla";
 
 function sla(overrides: Partial<SlaEvaluation>): SlaEvaluation {
@@ -168,5 +174,83 @@ describe("decideFallback", () => {
     );
     expect(d.useFallback).toBe(true);
     expect(d.verdict).toBe("fallback-fired");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Global caps
+// ---------------------------------------------------------------------------
+//
+// The per-IP counter bounds one visitor, not us: with N unique IPs the exposure
+// is N x budget, unbounded, every request billed to our provider account. These
+// cover the ceilings added for launch week.
+
+describe("global fallback caps", () => {
+  const ORIGINAL_SPEND = process.env.SENDA_FALLBACK_DAILY_SPEND_USD;
+  const ORIGINAL_GLOBAL = process.env.SENDA_FALLBACK_GLOBAL_HOURLY_MAX;
+
+  afterEach(() => {
+    if (ORIGINAL_SPEND === undefined) delete process.env.SENDA_FALLBACK_DAILY_SPEND_USD;
+    else process.env.SENDA_FALLBACK_DAILY_SPEND_USD = ORIGINAL_SPEND;
+    if (ORIGINAL_GLOBAL === undefined) delete process.env.SENDA_FALLBACK_GLOBAL_HOURLY_MAX;
+    else process.env.SENDA_FALLBACK_GLOBAL_HOURLY_MAX = ORIGINAL_GLOBAL;
+  });
+
+  it("defaults to a real spend ceiling, never unlimited", () => {
+    delete process.env.SENDA_FALLBACK_DAILY_SPEND_USD;
+    const cap = fallbackDailySpendCapMicros();
+    expect(cap).toBeGreaterThan(0);
+    expect(Number.isFinite(cap)).toBe(true);
+    expect(cap).toBe(25 * USD_MICROS);
+  });
+
+  it("honours an explicit dollar ceiling, including fractional", () => {
+    process.env.SENDA_FALLBACK_DAILY_SPEND_USD = "5";
+    expect(fallbackDailySpendCapMicros()).toBe(5 * USD_MICROS);
+    process.env.SENDA_FALLBACK_DAILY_SPEND_USD = "2.50";
+    expect(fallbackDailySpendCapMicros()).toBe(2_500_000);
+  });
+
+  it("falls back to the default on junk or non-positive input", () => {
+    for (const bad of ["", "abc", "0", "-5", "NaN"]) {
+      process.env.SENDA_FALLBACK_DAILY_SPEND_USD = bad;
+      expect(fallbackDailySpendCapMicros(), bad).toBe(25 * USD_MICROS);
+    }
+  });
+
+  it("defaults the global hourly burst ceiling and honours overrides", () => {
+    delete process.env.SENDA_FALLBACK_GLOBAL_HOURLY_MAX;
+    expect(fallbackGlobalHourlyMax()).toBe(500);
+    process.env.SENDA_FALLBACK_GLOBAL_HOURLY_MAX = "50";
+    expect(fallbackGlobalHourlyMax()).toBe(50);
+    process.env.SENDA_FALLBACK_GLOBAL_HOURLY_MAX = "-1";
+    expect(fallbackGlobalHourlyMax()).toBe(500);
+  });
+
+  it("global ceiling is stricter than one IP could reach alone", () => {
+    // Sanity: the burst guard must sit above a single IP's allowance, or it
+    // would deny before the per-IP limit ever applied.
+    delete process.env.SENDA_FALLBACK_GLOBAL_HOURLY_MAX;
+    delete process.env.SENDA_FALLBACK_HOURLY_BUDGET;
+    expect(fallbackGlobalHourlyMax()).toBeGreaterThan(20);
+  });
+
+  it("reports zero spend when Redis is unconfigured rather than throwing", async () => {
+    await expect(fallbackSpendTodayMicros()).resolves.toBe(0);
+  });
+
+  it("recording spend without Redis is a no-op, not an error", async () => {
+    await expect(
+      recordFallbackSpend({
+        modelId: "Qwen3-8B-Q4_K_M",
+        promptTokens: 1000,
+        completionTokens: 500,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("allows the request when Redis is unconfigured (local dev)", async () => {
+    const res = await consumeFallbackBudget("1.2.3.4");
+    expect(res.allowed).toBe(true);
   });
 });

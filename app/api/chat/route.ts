@@ -12,6 +12,7 @@ import {
   consumeFallbackBudget,
   decideFallback,
   getOpenRouterProvider,
+  recordFallbackSpend,
 } from "../../lib/fallback-provider";
 import { isVisionModel } from "../../lib/model-catalog";
 import { resolveCatalog } from "../../lib/resolve-catalog";
@@ -379,13 +380,22 @@ export async function POST(req: Request) {
     const clientIp = getClientIp(req);
     const budget = await consumeFallbackBudget(clientIp);
     if (!budget.allowed) {
-      // The free `/chat` testbed bounds external-supply use per IP
-      // per hour while we're not yet billing. Over-budget callers
-      // route to the mesh path on this surface. Phase 5's paid API
-      // replaces this with the customer's credit balance.
+      // The free `/chat` testbed bounds external-supply use per IP per hour
+      // while we're not yet billing, and bounds total daily spend globally.
+      // Denied callers route to the mesh path on this surface. Phase 5's paid
+      // API replaces the per-IP counter with the customer's credit balance.
+      //
+      // The reason is carried through rather than flattened to
+      // "rate-limited": a tripped *spend* cap is an operational event worth
+      // seeing in `x-senda-fallback-status`, not the same as one chatty IP.
       decision = {
         useFallback: false,
-        verdict: "fallback-rate-limited",
+        verdict:
+          budget.reason === "global-spend-cap"
+            ? "fallback-spend-capped"
+            : budget.reason === "global-rate-limited"
+              ? "fallback-global-limited"
+              : "fallback-rate-limited",
         fallbackModelSlug: null,
       };
     } else {
@@ -505,6 +515,16 @@ export async function POST(req: Request) {
         messages: convertToModelMessages(parsed.body.messages),
         maxRetries: 1,
         ...streamGuards,
+        // Feed the global daily spend cap. Without this the cap never
+        // accumulates and is decorative. Fire-and-forget by contract.
+        onFinish: ({ usage }) => {
+          clearIdle();
+          void recordFallbackSpend({
+            modelId,
+            promptTokens: usage?.inputTokens ?? 0,
+            completionTokens: usage?.outputTokens ?? 0,
+          });
+        },
       });
     }
   } else {

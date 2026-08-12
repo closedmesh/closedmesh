@@ -39,6 +39,8 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { getModelTier } from "./model-tiers";
 import { getRedis } from "./redis";
+import { USD_MICROS } from "./rate-card";
+import { requestCostOfGoodsMicros } from "./margin-accounting";
 import { normalizeModelId } from "./model-id";
 import type { SlaEvaluation } from "./routing-sla";
 
@@ -108,6 +110,11 @@ export type FallbackVerdict =
   | "fallback-no-mapping"
   | "fallback-wrong-tier"
   | "fallback-rate-limited"
+  /** Daily external-provider spend ceiling reached — distinct from a per-IP
+   *  rate limit, and the one worth alerting on. */
+  | "fallback-spend-capped"
+  /** Global hourly request ceiling reached (burst guard). */
+  | "fallback-global-limited"
   | "vision-mesh-only"
   | "fallback-fired"
   | "fallback-capacity-no-host";
@@ -222,9 +229,115 @@ function budgetKey(clientIp: string, hour = currentHourBucket()): string {
   return `senda:fallback:budget:${clientIp}:${hour}`;
 }
 
+// ---------------------------------------------------------------------------
+// Global caps
+// ---------------------------------------------------------------------------
+//
+// The per-IP counter above bounds one visitor; it does not bound *us*. With N
+// unique IPs the exposure is N x budget, unbounded, and every request is billed
+// to our provider account. That is the wrong shape for an announcement, where
+// traffic is exactly what we are trying to cause.
+//
+// Two ceilings, because they fail differently:
+//
+//   - **Daily spend** is the meaningful one — long prompts cost far more than
+//     short ones, so a request count is a poor proxy for money. Priced with the
+//     same `requestCostOfGoodsMicros` the margin ledger uses, so the cap and the
+//     reporting can never disagree about what a fallback request cost.
+//   - **Global hourly requests** bounds the burst. Spend can only be recorded
+//     *after* a request completes, so a concurrent spike can all clear the spend
+//     pre-check together. This is the guard for that race.
+//
+// Neither replaces a hard credit limit on the provider key itself: that one does
+// not depend on this code being correct.
+
+const DEFAULT_DAILY_SPEND_USD = 25;
+const DEFAULT_GLOBAL_HOURLY_MAX = 500;
+
+export function fallbackDailySpendCapMicros(): number {
+  const raw = process.env.SENDA_FALLBACK_DAILY_SPEND_USD?.trim();
+  const usd = raw ? Number.parseFloat(raw) : NaN;
+  const effective =
+    Number.isFinite(usd) && usd > 0 ? usd : DEFAULT_DAILY_SPEND_USD;
+  return Math.round(effective * USD_MICROS);
+}
+
+export function fallbackGlobalHourlyMax(): number {
+  const raw = process.env.SENDA_FALLBACK_GLOBAL_HOURLY_MAX?.trim();
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_GLOBAL_HOURLY_MAX;
+}
+
+function currentDayBucket(at = new Date()): string {
+  return `${at.getUTCFullYear()}${String(at.getUTCMonth() + 1).padStart(2, "0")}${String(at.getUTCDate()).padStart(2, "0")}`;
+}
+
+function spendKey(day = currentDayBucket()): string {
+  return `senda:fallback:spend:${day}`;
+}
+
+function globalCountKey(hour = currentHourBucket()): string {
+  return `senda:fallback:global:${hour}`;
+}
+
+/**
+ * Record what a completed fallback request actually cost us, in micro-USD.
+ *
+ * Fire-and-forget: never allowed to fail the response. Under-recording is the
+ * safe direction — the cap simply trips a little later — whereas throwing here
+ * would break a request the visitor is already reading.
+ */
+export async function recordFallbackSpend(input: {
+  modelId: string;
+  promptTokens: number;
+  completionTokens: number;
+}): Promise<void> {
+  const redis = getRedis();
+  if (!redis) return;
+  const micros = requestCostOfGoodsMicros({
+    servedBy: "fallback",
+    modelId: input.modelId,
+    promptTokens: input.promptTokens,
+    completionTokens: input.completionTokens,
+  });
+  if (micros <= 0) return;
+  try {
+    const key = spendKey();
+    const total = await redis.incrby(key, micros);
+    if (total === micros) {
+      // First write of the day; keep two days so a UTC-boundary read is safe.
+      await redis.expire(key, 2 * 24 * 3600);
+    }
+  } catch {
+    /* bookkeeping must never break the response */
+  }
+}
+
+/** Accumulated external-provider spend for the current UTC day, micro-USD. */
+export async function fallbackSpendTodayMicros(): Promise<number> {
+  const redis = getRedis();
+  if (!redis) return 0;
+  try {
+    const raw = await redis.get<string | number | null>(spendKey());
+    if (raw == null) return 0;
+    const n = typeof raw === "number" ? raw : Number.parseInt(String(raw), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    // Fail closed would take chat down on a Redis blip; fail open and let the
+    // provider-side credit limit be the backstop.
+    return 0;
+  }
+}
+
 export type BudgetResult =
   | { allowed: true; remaining: number }
-  | { allowed: false; reason: "rate-limited"; remaining: 0 };
+  | {
+      allowed: false;
+      reason: "rate-limited" | "global-spend-cap" | "global-rate-limited";
+      remaining: 0;
+    };
 
 /**
  * Atomically increment the per-IP per-hour counter on the free
@@ -246,6 +359,27 @@ export async function consumeFallbackBudget(
   if (!redis) {
     return { allowed: true, remaining: budget };
   }
+  // Global ceilings are checked before the per-IP counter is consumed, so a
+  // capped-out day doesn't burn a visitor's personal allowance on a request that
+  // was never going to be served externally.
+  const spent = await fallbackSpendTodayMicros();
+  if (spent >= fallbackDailySpendCapMicros()) {
+    return { allowed: false, reason: "global-spend-cap", remaining: 0 };
+  }
+
+  const globalMax = fallbackGlobalHourlyMax();
+  try {
+    const gKey = globalCountKey();
+    const gCount = await redis.incr(gKey);
+    if (gCount === 1) await redis.expire(gKey, 3700);
+    if (gCount > globalMax) {
+      return { allowed: false, reason: "global-rate-limited", remaining: 0 };
+    }
+  } catch {
+    // A Redis failure here shouldn't take chat down. The daily spend cap and the
+    // provider-side credit limit remain in front of real money.
+  }
+
   const key = budgetKey(clientIp);
   const count = await redis.incr(key);
   if (count === 1) {
