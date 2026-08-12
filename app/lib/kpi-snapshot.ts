@@ -15,7 +15,13 @@ export type KpiSnapshot = {
   /** Models routable on the entry `/v1/models` at capture time. */
   routable_models: string[];
   flagship: {
+    /** Peers participating in serving the flagship, including split workers
+     *  still loading. A supply figure, not an availability one. */
     contributors: number;
+    /** Subset of `contributors` that can answer a request right now (model
+     *  actually hosted/loaded, not merely advertised). Optional for snapshots
+     *  written before this field existed — see `normalizeKpiSnapshot`. */
+    ready_contributors?: number;
     tps_p50_median: number | null;
     ttft_ms_best: number | null;
     tps_sample_count: number;
@@ -48,6 +54,14 @@ export type KpiStatusNode = {
     vramGb?: number;
     loadedModels?: string[];
   };
+  /**
+   * Models this peer has *actually loaded and is hosting*, as distinct from
+   * `servingModels` (which is a union including intent — see
+   * `meshRuntimeToKpiInput`). Kept separate so "can answer a request right
+   * now" is answerable; the union alone cannot distinguish a serving Host from
+   * a peer still pulling weights.
+   */
+  hostedModels?: string[];
   measuredTpsP50ByModel?: Record<string, number>;
   measuredTtftMsP50ByModel?: Record<string, number>;
   /** Phase 3.0 native baselines — used only as a plausibility bound. */
@@ -165,6 +179,7 @@ export function meshRuntimeToKpiInput(body: MeshRuntimeStatus): KpiStatusInput {
           vramGb,
           loadedModels: loaded,
         },
+        hostedModels: peer.hosted_models ?? [],
         measuredTpsP50ByModel: peer.measured_tps_p50_by_model,
         measuredTtftMsP50ByModel: peer.measured_ttft_ms_p50_by_model,
         nativeTpsP50ByModel: peer.native_tps_p50_by_model,
@@ -183,6 +198,31 @@ export function meshRuntimeToKpiInput(body: MeshRuntimeStatus): KpiStatusInput {
 function servesModel(node: KpiStatusNode, model: string): boolean {
   const loaded = node.capability?.loadedModels ?? [];
   return node.servingModels.includes(model) || loaded.includes(model);
+}
+
+/**
+ * Can this peer answer a request for `model` *right now*?
+ *
+ * Deliberately stricter than {@link servesModel}, and deliberately NOT a
+ * replacement for it. The two answer different questions:
+ *
+ *   - `servesModel` — is this peer participating in serving the model? A
+ *     pipeline-split Worker still pulling weights counts, because it is
+ *     contributing VRAM to the group. That is the right notion for a *supply*
+ *     metric, and existing behaviour depends on it.
+ *   - `servesModelNow` — could a request land here and get an answer? A peer in
+ *     `loading` with nothing hosted cannot, no matter what it advertises.
+ *     `serving_models` is intent, not reality.
+ *
+ * Conflating them inflates the headline contributor count: on 2026-08-12 the
+ * mesh had two peers advertising Qwen3-8B but only one (`MSI`) hosting it,
+ * while `0xSenda` was still `loading` with `hosted_models: []`.
+ */
+export function servesModelNow(node: KpiStatusNode, model: string): boolean {
+  if ((node.state ?? "").toLowerCase() === "loading") return false;
+  const hosted = node.hostedModels ?? [];
+  const loaded = node.capability?.loadedModels ?? [];
+  return hosted.includes(model) || loaded.includes(model);
 }
 
 /**
@@ -250,6 +290,14 @@ export function normalizeKpiSnapshot(snap: KpiSnapshot | null): KpiSnapshot | nu
   return {
     ...snap,
     routable_models: snap.routable_models ?? [],
+    flagship: {
+      ...snap.flagship,
+      // Pre-existing snapshots have no ready count. Fall back to `contributors`
+      // rather than 0: those weeks genuinely had serving peers, and reporting 0
+      // would invent an outage that never happened.
+      ready_contributors:
+        snap.flagship.ready_contributors ?? snap.flagship.contributors,
+    },
   };
 }
 
@@ -293,6 +341,10 @@ export function mergeWeekSnapshots(
     backends: uniqueStrings([...prev.backends, ...next.backends]).sort(),
     flagship: {
       contributors: Math.max(prev.flagship.contributors, next.flagship.contributors),
+      ready_contributors: Math.max(
+        prev.flagship.ready_contributors ?? 0,
+        next.flagship.ready_contributors ?? 0,
+      ),
       tps_p50_median: mergedTps,
       ttft_ms_best: mergedTtft,
       tps_sample_count: Math.max(
@@ -360,6 +412,9 @@ export function buildKpiSnapshot(
   const contributors = status.nodes.filter(
     (n) => !isEntryHostname(n.hostname) && servesModel(n, flagshipModel),
   );
+  const readyContributors = contributors.filter((n) =>
+    servesModelNow(n, flagshipModel),
+  );
 
   const tpsVals = status.nodes
     .map((n) => plausibleThroughMeshTps(n, flagshipModel))
@@ -401,6 +456,7 @@ export function buildKpiSnapshot(
     routable_models: routableModels,
     flagship: {
       contributors: contributors.length,
+      ready_contributors: readyContributors.length,
       tps_p50_median: median(tpsVals),
       ttft_ms_best: ttftVals.length > 0 ? Math.min(...ttftVals) : null,
       tps_sample_count: tpsVals.length,

@@ -104,6 +104,58 @@ describe("evaluateMeshHealth", () => {
   });
 });
 
+describe("availability is judged on ready peers, not advertised ones", () => {
+  test("contributors present but none ready is degraded", () => {
+    const h = evaluateMeshHealth(
+      snap({
+        flagship: {
+          contributors: 2,
+          ready_contributors: 0, // both still pulling weights
+          tps_p50_median: null,
+          ttft_ms_best: null,
+          tps_sample_count: 0,
+          ttft_sample_count: 0,
+        },
+      }),
+      null,
+      AT,
+    );
+    expect(h.level).toBe("degraded");
+    expect(h.reasons).toContain("flagship_no_contributors");
+    expect(h.flagship_contributors).toBe(2);
+    expect(h.flagship_ready_contributors).toBe(0);
+  });
+
+  test("one ready peer is healthy even while others load", () => {
+    const h = evaluateMeshHealth(
+      snap({ flagship: { ...snap().flagship, contributors: 2, ready_contributors: 1 } }),
+      null,
+      AT,
+    );
+    expect(h.level).toBe("ok");
+    expect(describeMeshHealth(h)).toContain("1 peer(s) serving");
+    expect(describeMeshHealth(h)).toContain("1 more loading");
+  });
+
+  test("falls back to contributors when ready is absent (legacy snapshot)", () => {
+    const s = snap();
+    delete (s.flagship as { ready_contributors?: number }).ready_contributors;
+    const h = evaluateMeshHealth(s, null, AT);
+    expect(h.level).toBe("ok");
+    expect(h.flagship_ready_contributors).toBe(s.flagship.contributors);
+  });
+
+  test("no warming note when every contributor is ready", () => {
+    const h = evaluateMeshHealth(
+      snap({ flagship: { ...snap().flagship, contributors: 3, ready_contributors: 3 } }),
+      null,
+      AT,
+    );
+    expect(describeMeshHealth(h)).toContain("3 peer(s) serving");
+    expect(describeMeshHealth(h)).not.toContain("loading");
+  });
+});
+
 describe("degraded run tracking", () => {
   const degraded = (at: Date, prior: MeshHealth | null) =>
     evaluateMeshHealth(

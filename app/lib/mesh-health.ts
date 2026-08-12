@@ -35,7 +35,13 @@ export type MeshHealth = {
   reasons: MeshHealthReason[];
   flagship_model: string;
   flagship_routable: boolean;
+  /** Peers participating in serving the flagship (includes split workers still
+   *  loading). Supply, not availability. */
   flagship_contributors: number;
+  /** Peers that can answer a request for the flagship right now. This is the
+   *  number to quote — `flagship_contributors` counts peers still pulling
+   *  weights, which cannot serve anyone. */
+  flagship_ready_contributors: number;
   routable_models: string[];
   node_count: number;
 };
@@ -76,6 +82,10 @@ export function evaluateMeshHealth(
   const routable = snapshot.routable_models ?? [];
   const flagshipRoutable = routable.includes(snapshot.flagship_model);
   const contributors = snapshot.flagship.contributors;
+  // Availability is judged on peers that can actually answer, not on peers that
+  // merely advertise the model. A mesh whose only flagship peer is still
+  // `loading` is degraded, however healthy the contributor count looks.
+  const readyContributors = snapshot.flagship.ready_contributors ?? contributors;
 
   const reasons: MeshHealthReason[] = [];
   let level: MeshHealthLevel = "ok";
@@ -91,7 +101,7 @@ export function evaluateMeshHealth(
       reasons.push("flagship_not_routable");
       level = "degraded";
     }
-    if (contributors <= 0) {
+    if (readyContributors <= 0) {
       reasons.push("flagship_no_contributors");
       level = "degraded";
     }
@@ -115,6 +125,7 @@ export function evaluateMeshHealth(
     flagship_model: snapshot.flagship_model,
     flagship_routable: flagshipRoutable,
     flagship_contributors: contributors,
+    flagship_ready_contributors: readyContributors,
     routable_models: routable,
     node_count: snapshot.node_count,
   };
@@ -123,7 +134,10 @@ export function evaluateMeshHealth(
 /** One-line summary for logs, the cron response, and the `/status` banner. */
 export function describeMeshHealth(health: MeshHealth): string {
   if (health.level === "ok") {
-    return `Mesh healthy — ${health.flagship_contributors} peer(s) serving ${health.flagship_model}.`;
+    const ready = health.flagship_ready_contributors;
+    const warming = health.flagship_contributors - ready;
+    const warmingNote = warming > 0 ? ` (${warming} more loading)` : "";
+    return `Mesh healthy — ${ready} peer(s) serving ${health.flagship_model}${warmingNote}.`;
   }
   const detail = health.reasons
     .map((r) => MESH_HEALTH_REASON_COPY[r])

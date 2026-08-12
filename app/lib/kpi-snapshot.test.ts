@@ -3,7 +3,9 @@ import {
   buildKpiSnapshot,
   mergeWeekSnapshots,
   meshRuntimeToKpiInput,
+  normalizeKpiSnapshot,
   pickFlagshipModel,
+  servesModelNow,
   snapshotFromMilestone,
   snapshotQuality,
   KNOWN_MILESTONES,
@@ -167,6 +169,118 @@ describe("mergeWeekSnapshots", () => {
     const merged = mergeWeekSnapshots(peak, empty);
     expect(merged.node_count).toBe(4);
     expect(merged.online).toBe(true);
+  });
+});
+
+describe("ready vs participating contributors", () => {
+  // The real 2026-08-12 mesh: MSI hosting Qwen3-8B, 0xSenda advertising it but
+  // still `loading` with hosted_models: []. Two contributors, one that can
+  // actually answer.
+  const liveMesh = () =>
+    meshRuntimeToKpiInput({
+      peers: [
+        {
+          hostname: "MSI",
+          role: "Host",
+          state: "serving",
+          vram_gb: 8.58,
+          serving_models: ["Qwen3-8B-Q4_K_M"],
+          hosted_models: ["Qwen3-8B-Q4_K_M"],
+          capability: { backend: "cuda", loaded_models: ["Qwen3-8B-Q4_K_M"] },
+        },
+        {
+          hostname: "0xSenda",
+          role: "Worker",
+          state: "loading",
+          vram_gb: 14.5,
+          serving_models: ["Qwen3-8B-Q4_K_M"],
+          hosted_models: [],
+          capability: { backend: "metal" },
+        },
+      ],
+    });
+
+  test("counts participating peers and ready peers separately", () => {
+    const snap = buildKpiSnapshot(
+      liveMesh(),
+      "Qwen3-8B-Q4_K_M",
+      "https://entry.senda.network/api/status",
+      new Date("2026-08-12T07:00:00Z"),
+      ["Qwen3-8B-Q4_K_M"],
+    );
+    expect(snap.flagship.contributors).toBe(2);
+    expect(snap.flagship.ready_contributors).toBe(1);
+  });
+
+  test("a loading peer with nothing hosted is never ready", () => {
+    const input = liveMesh();
+    const loading = input.nodes.find((n) => n.hostname === "0xSenda")!;
+    expect(servesModelNow(loading, "Qwen3-8B-Q4_K_M")).toBe(false);
+    // ...but it still counts as participating supply.
+    expect(loading.servingModels).toContain("Qwen3-8B-Q4_K_M");
+  });
+
+  test("a serving host with the model hosted is ready", () => {
+    const input = liveMesh();
+    const host = input.nodes.find((n) => n.hostname === "MSI")!;
+    expect(servesModelNow(host, "Qwen3-8B-Q4_K_M")).toBe(true);
+  });
+
+  test("split workers still count as contributors (unchanged behaviour)", () => {
+    const input = meshRuntimeToKpiInput({
+      peers: [
+        {
+          hostname: "LYU",
+          role: "Host",
+          state: "serving",
+          vram_gb: 17,
+          hosted_models: ["DeepSeek-R1-Distill-70B-Q4_K_M"],
+          serving_models: ["DeepSeek-R1-Distill-70B-Q4_K_M"],
+          capability: { backend: "cuda" },
+        },
+        {
+          hostname: "worker-1",
+          role: "Worker",
+          state: "loading",
+          vram_gb: 12,
+          requested_models: ["DeepSeek-R1-Distill-70B-Q4_K_M"],
+          capability: { backend: "cuda" },
+        },
+      ],
+    });
+    const snap = buildKpiSnapshot(
+      input,
+      "DeepSeek-R1-Distill-70B-Q4_K_M",
+      "https://entry.senda.network/api/status",
+      new Date("2026-08-12T07:00:00Z"),
+      ["DeepSeek-R1-Distill-70B-Q4_K_M"],
+    );
+    expect(snap.flagship.contributors).toBe(2);
+    expect(snap.flagship.ready_contributors).toBe(1);
+  });
+
+  test("normalize backfills ready from contributors for old snapshots", () => {
+    const legacy = {
+      captured_at: "2026-07-20T00:00:00Z",
+      status_url: "https://entry.senda.network/api/status",
+      flagship_model: "Qwen3-8B-Q4_K_M",
+      online: true,
+      node_count: 4,
+      backends: ["metal"],
+      pooled_vram_gb: 70.3,
+      models_available: 2,
+      routable_models: ["Qwen3-8B-Q4_K_M"],
+      flagship: {
+        contributors: 2,
+        tps_p50_median: 21.8,
+        ttft_ms_best: 1163,
+        tps_sample_count: 1,
+        ttft_sample_count: 1,
+      },
+    };
+    const norm = normalizeKpiSnapshot(legacy)!;
+    // Not 0 — those weeks really did have serving peers.
+    expect(norm.flagship.ready_contributors).toBe(2);
   });
 });
 
